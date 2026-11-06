@@ -50,5 +50,5 @@ RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 9222
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["/app/entrypoint.sh"]
