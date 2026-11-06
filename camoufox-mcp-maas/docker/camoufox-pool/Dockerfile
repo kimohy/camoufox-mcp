@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpci3 \
     libegl1 \
     libgl1 \
-    libNSS3 \
+    libnss3 \
     libxss1 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
