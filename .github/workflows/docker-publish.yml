@@ -18,8 +18,42 @@ env:
   GATEWAY_IMAGE: ghcr.io/kimohy/camoufox-mcp-gateway
 
 jobs:
+  changes:
+    name: Detect Component Changes
+    runs-on: ubuntu-24.04
+    outputs:
+      gateway: ${{ steps.filter.outputs.gateway }}
+      pool: ${{ steps.filter.outputs.pool }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check changed files
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "gateway=true" >> "$GITHUB_OUTPUT"
+            echo "pool=true" >> "$GITHUB_OUTPUT"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD || echo "all")
+            if echo "$CHANGED" | grep -qE "^(docker/mcp-gateway/|all)"; then
+              echo "gateway=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "gateway=false" >> "$GITHUB_OUTPUT"
+            fi
+            if echo "$CHANGED" | grep -qE "^(docker/camoufox-pool/|all)"; then
+              echo "pool=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "pool=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   build-gateway:
     name: Build & Push MCP Gateway (amd64 + arm64)
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -53,6 +87,8 @@ jobs:
 
   build-pool-amd64:
     name: Build & Push Camoufox Pool (linux/amd64)
+    needs: changes
+    if: needs.changes.outputs.pool == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -81,6 +117,8 @@ jobs:
 
   build-pool-arm64:
     name: Build & Push Camoufox Pool (linux/arm64 native)
+    needs: changes
+    if: needs.changes.outputs.pool == 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
@@ -110,8 +148,10 @@ jobs:
   merge-pool-manifest:
     name: Create Multi-Arch Manifest for Camoufox Pool
     needs:
+      - changes
       - build-pool-amd64
       - build-pool-arm64
+    if: needs.changes.outputs.pool == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Log in to GitHub Container Registry
