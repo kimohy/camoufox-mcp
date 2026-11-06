@@ -1,0 +1,52 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-browser-netpol
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: camoufox-browser
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: browser-pool
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: camoufox-browser
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: browser-pool
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow WebSocket connections on port 9222 from mcp-gateway pods in the same release
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: mcp-gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.browserPool.port }}
+  egress:
+    # 1. Allow Cluster DNS resolution (CoreDNS / kube-dns on port 53 UDP/TCP)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: {{ .Values.networkPolicy.allowClusterDnsPort | default 53 }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.allowClusterDnsPort | default 53 }}
+    # 2. Allow public internet access while strictly blocking RFC1918 private networks,
+    #    Carrier-Grade NAT, Loopback, and Cloud Metadata / Link-Local (169.254.0.0/16)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+{{- end }}

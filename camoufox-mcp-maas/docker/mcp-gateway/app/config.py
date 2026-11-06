@@ -1,0 +1,68 @@
+import os
+from pathlib import Path
+from typing import List, Optional
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application configuration loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    BROWSER_WS_URL: str = Field(
+        default="ws://camoufox-browser-svc:9222/stealth-agent",
+        description="Remote Camoufox Playwright WebSocket endpoint.",
+    )
+    MCP_API_KEYS: str = Field(
+        default="",
+        description="Comma-separated list of static Bearer tokens allowed to access the MCP gateway.",
+    )
+    SECRET_URL_TOKEN: str = Field(
+        default="",
+        description="Path-based secret token (/s/{SECRET_URL_TOKEN}/mcp) for clients that cannot set custom headers.",
+    )
+    SESSION_TTL_SECONDS: int = Field(
+        default=600,
+        ge=30,
+        description="Idle session TTL in seconds before automatic garbage collection.",
+    )
+    MAX_SESSIONS: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum concurrent isolated BrowserContext sessions.",
+    )
+    PROFILE_STORAGE_DIR: str = Field(
+        default="/data/profiles",
+        description="Persistent directory path for storing and loading BrowserContext storage states.",
+    )
+    DEFAULT_PROXY_SERVER: Optional[str] = Field(
+        default=None,
+        description="Optional default outbound proxy server URL (e.g., http://proxy:8080 or socks5://proxy:1080).",
+    )
+    NAVIGATION_TIMEOUT_MS: int = Field(
+        default=45000,
+        description="Default page navigation timeout in milliseconds.",
+    )
+
+    @property
+    def api_keys_list(self) -> List[str]:
+        """Return parsed list of non-empty Bearer API keys."""
+        if not self.MCP_API_KEYS:
+            return []
+        return [key.strip() for key in self.MCP_API_KEYS.split(",") if key.strip()]
+
+    @property
+    def profile_dir_path(self) -> Path:
+        """Ensure profile directory exists and return Path instance."""
+        path = Path(self.PROFILE_STORAGE_DIR).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+settings = Settings()

@@ -1,0 +1,121 @@
+{{- if .Values.mcpGateway.profileStorage.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-profiles-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: mcp-gateway
+spec:
+  accessModes:
+    - {{ .Values.mcpGateway.profileStorage.accessMode | default "ReadWriteOnce" }}
+  {{- if .Values.mcpGateway.profileStorage.storageClassName }}
+  storageClassName: {{ .Values.mcpGateway.profileStorage.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mcpGateway.profileStorage.size | default "5Gi" }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-mcp-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: mcp-gateway
+spec:
+  replicas: {{ .Values.mcpGateway.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: mcp-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcp-gateway
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: mcp-gateway
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcp-gateway
+          image: "{{ .Values.mcpGateway.image.repository }}:{{ .Values.mcpGateway.image.tag }}"
+          imagePullPolicy: {{ .Values.mcpGateway.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcpGateway.port }}
+              protocol: TCP
+          env:
+            - name: BROWSER_WS_URL
+              value: "ws://camoufox-browser-svc:{{ .Values.browserPool.port }}/{{ .Values.browserPool.wsPath }}"
+            - name: MCP_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: MCP_API_KEYS
+            - name: SECRET_URL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: SECRET_URL_TOKEN
+            - name: DEFAULT_PROXY_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: DEFAULT_PROXY_SERVER
+            - name: SESSION_TTL_SECONDS
+              value: {{ .Values.mcpGateway.sessionTtlSeconds | quote }}
+            - name: MAX_SESSIONS
+              value: {{ .Values.mcpGateway.maxSessions | quote }}
+            - name: NAVIGATION_TIMEOUT_MS
+              value: {{ .Values.mcpGateway.navigationTimeoutMs | quote }}
+            - name: PROFILE_STORAGE_DIR
+              value: {{ .Values.mcpGateway.profileStorage.mountPath | default "/data/profiles" | quote }}
+          volumeMounts:
+            - name: profiles-storage
+              mountPath: {{ .Values.mcpGateway.profileStorage.mountPath | default "/data/profiles" }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.mcpGateway.resources | nindent 12 }}
+      volumes:
+        - name: profiles-storage
+          {{- if .Values.mcpGateway.profileStorage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-profiles-pvc
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.mcpGateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mcpGateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mcpGateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

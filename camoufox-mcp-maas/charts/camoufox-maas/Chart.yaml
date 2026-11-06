@@ -1,0 +1,15 @@
+apiVersion: v2
+name: camoufox-maas
+description: Production Helm Chart for Camoufox Stealth Browser Pool & Multi-Session MCP-as-a-Service (MaaS) Gateway on Kubernetes (k3s / Traefik / cert-manager)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - camoufox
+  - mcp
+  - playwright
+  - stealth-browser
+  - k3s
+  - traefik
+maintainers:
+  - name: Cloud Native Architecture Team

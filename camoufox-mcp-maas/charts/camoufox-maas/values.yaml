@@ -1,0 +1,91 @@
+global:
+  imagePullSecrets: []
+
+# -----------------------------------------------------------------------------
+# Camoufox Stealth Browser Pool Configuration
+# -----------------------------------------------------------------------------
+browserPool:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/kimohy/camoufox-pool
+    tag: "latest"
+    pullPolicy: Always
+  port: 9222
+  wsPath: "stealth-agent"
+  shmSize: "2Gi"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      cpu: "1500m"
+      memory: "2Gi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# MCP Gateway Server Configuration
+# -----------------------------------------------------------------------------
+mcpGateway:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/kimohy/camoufox-mcp-gateway
+    tag: "latest"
+    pullPolicy: Always
+  port: 8000
+  sessionTtlSeconds: 600
+  maxSessions: 20
+  navigationTimeoutMs: 45000
+  profileStorage:
+    enabled: true
+    mountPath: "/data/profiles"
+    storageClassName: "" # Leave empty for default k3s local-path storage class
+    accessMode: ReadWriteOnce
+    size: "5Gi"
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Outbound Proxy & Security Secrets
+# -----------------------------------------------------------------------------
+proxy:
+  # Optional default outbound proxy (e.g., "http://user:pass@proxy.example.com:8080" or "socks5://10.x.x.x:1080")
+  defaultProxyServer: ""
+
+auth:
+  # Comma-separated static Bearer tokens for CLI / SDK clients
+  mcpApiKeys: "cfx-prod-key-change-me-1,cfx-prod-key-change-me-2"
+  # Secret URL token for headerless clients (e.g., Google Gemini Web App: /s/<secretUrlToken>/mcp)
+  secretUrlToken: "gemini-stealth-url-secret-change-me"
+
+# -----------------------------------------------------------------------------
+# Traefik Ingress & TLS (cert-manager) Configuration
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: "traefik"
+  host: "mcp.example.com"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  tls:
+    enabled: true
+    secretName: "camoufox-mcp-tls"
+
+# -----------------------------------------------------------------------------
+# NetworkPolicy Configuration (SSRF Defense-in-Depth)
+# -----------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # Set to true if your k3s CNI (Calico, Cilium, Flannel+kube-router) enforces NetworkPolicies
+  allowClusterDnsPort: 53

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-mcp-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: mcp-gateway
+  annotations:
+    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.name: "camoufox_mcp_sticky"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  ports:
+    - name: http
+      port: {{ .Values.mcpGateway.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: mcp-gateway

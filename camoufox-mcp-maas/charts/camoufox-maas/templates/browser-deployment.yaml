@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-browser
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: camoufox-browser
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: browser-pool
+spec:
+  replicas: {{ .Values.browserPool.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: camoufox-browser
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: browser-pool
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: camoufox-browser
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: browser-pool
+    spec:
+      shareProcessNamespace: true
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: camoufox-pool
+          image: "{{ .Values.browserPool.image.repository }}:{{ .Values.browserPool.image.tag }}"
+          imagePullPolicy: {{ .Values.browserPool.image.pullPolicy }}
+          ports:
+            - name: ws
+              containerPort: {{ .Values.browserPool.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.browserPool.port | quote }}
+            - name: WS_PATH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: WS_PATH
+            - name: DEFAULT_PROXY_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: DEFAULT_PROXY_SERVER
+            - name: CAMOFOX_CRASH_REPORT_ENABLED
+              value: "false"
+            - name: CAMOUFOX_CRASH_REPORT_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          readinessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.browserPool.resources | nindent 12 }}
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.browserPool.shmSize | default "2Gi" }}
+      {{- with .Values.browserPool.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.browserPool.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.browserPool.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
