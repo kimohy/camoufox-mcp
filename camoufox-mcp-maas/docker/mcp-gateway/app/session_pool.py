@@ -107,7 +107,7 @@ class CamoufoxSessionPool:
 
             try:
                 self._browser = await self._playwright.firefox.connect(
-                    ws_endpoint=settings.BROWSER_WS_URL,
+                    settings.BROWSER_WS_URL,
                     timeout=30000,
                 )
             except Exception as exc:
