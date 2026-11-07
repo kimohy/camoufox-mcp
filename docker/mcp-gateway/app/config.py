@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     )
     SECRET_URL_TOKEN: str = Field(
         default="",
-        description="Path-based secret token (/s/{SECRET_URL_TOKEN}/mcp) for clients that cannot set custom headers.",
+        description="Path-based secret token (/camoufox/s/{SECRET_URL_TOKEN}/mcp) for clients that cannot set custom headers.",
+    )
+    BASE_PATH_PREFIX: str = Field(
+        default="/camoufox",
+        description="Optional service path prefix (e.g., '/camoufox') when sharing an MCP domain across multiple services.",
     )
     SESSION_TTL_SECONDS: int = Field(
         default=600,

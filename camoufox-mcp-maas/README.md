@@ -210,31 +210,31 @@ curl -i https://mcp.yourdomain.com/mcp
 
 ### 5.1. Google Gemini CLI (`gemini mcp add`)
 
-Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 방식 중 하나로 등록할 수 있습니다.
+Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 방식 중 하나로 등록할 수 있습니다. (`mcp.yourdomain.com` 도메인을 다목적 MCP 허브로 사용할 수 있도록 기본 서비스 경로 `/camoufox`가 삽입되어 있습니다.)
 
 * **방식 1: Bearer 헤더 인증 (권장)**
   ```bash
   gemini mcp add --transport http camoufox-stealth \
-    https://mcp.yourdomain.com/mcp \
+    https://mcp.yourdomain.com/camoufox/mcp \
     --header "Authorization: Bearer ${MCP_API_KEY}"
   ```
 * **방식 2: URL Path 시크릿 토큰 인증**
   ```bash
   gemini mcp add --transport http camoufox-stealth \
-    "https://mcp.yourdomain.com/s/${SECRET_URL_TOKEN}/mcp"
+    "https://mcp.yourdomain.com/camoufox/s/${SECRET_URL_TOKEN}/mcp"
   ```
 
 ### 5.2. Google Gemini 웹 앱 (`gemini.google.com/devmode`) 및 Chrome 확장 (MCP SuperAssistant)
 
-커스텀 HTTP 헤더(`Authorization`) 설정을 지원하지 않는 웹 기반 클라이언트에서는 `/s/{SECRET_URL_TOKEN}/...` 엔드포인트를 사용합니다.
+커스텀 HTTP 헤더(`Authorization`) 설정을 지원하지 않는 웹 기반 클라이언트에서는 `/camoufox/s/{SECRET_URL_TOKEN}/...` 엔드포인트를 사용합니다.
 
 * **Streamable HTTP 엔드포인트**:
   ```text
-  https://mcp.yourdomain.com/s/<YOUR_SECRET_URL_TOKEN>/mcp
+  https://mcp.yourdomain.com/camoufox/s/<YOUR_SECRET_URL_TOKEN>/mcp
   ```
 * **SSE (Server-Sent Events) 호환 엔드포인트**:
   ```text
-  https://mcp.yourdomain.com/s/<YOUR_SECRET_URL_TOKEN>/sse
+  https://mcp.yourdomain.com/camoufox/s/<YOUR_SECRET_URL_TOKEN>/sse
   ```
 
 ### 5.3. Claude Desktop / Cursor / Windsurf (`mcp.json`) 설정
@@ -245,7 +245,7 @@ Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 
 {
   "mcpServers": {
     "camoufox-stealth": {
-      "url": "https://mcp.yourdomain.com/mcp",
+      "url": "https://mcp.yourdomain.com/camoufox/mcp",
       "headers": {
         "Authorization": "Bearer <YOUR_MCP_API_KEY>"
       }
@@ -253,7 +253,7 @@ Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 
   }
 }
 ```
-*(헤더 설정을 지원하지 않는 버전의 클라이언트라면 `"url": "https://mcp.yourdomain.com/s/<YOUR_SECRET_URL_TOKEN>/sse"`만 입력하면 즉시 동작합니다.)*
+*(헤더 설정을 지원하지 않는 버전의 클라이언트라면 `"url": "https://mcp.yourdomain.com/camoufox/s/<YOUR_SECRET_URL_TOKEN>/sse"`만 입력하면 즉시 동작합니다.)*
 
 ### 5.4. Python `google-genai` SDK 연동 코드
 
@@ -265,7 +265,7 @@ from google.genai import types
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-MCP_ENDPOINT = os.getenv("MCP_ENDPOINT", "https://mcp.yourdomain.com/mcp")
+MCP_ENDPOINT = os.getenv("MCP_ENDPOINT", "https://mcp.yourdomain.com/camoufox/mcp")
 MCP_API_KEY = os.getenv("MCP_API_KEY", "cfx-prod-key-change-me-1")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-api-key")
 

@@ -34,6 +34,7 @@ mcpGateway:
     tag: "latest"
     pullPolicy: Always
   port: 8000
+  basePathPrefix: "/camoufox"
   sessionTtlSeconds: 600
   maxSessions: 20
   navigationTimeoutMs: 45000
@@ -74,6 +75,7 @@ ingress:
   enabled: true
   className: "traefik"
   host: "mcp.example.com"
+  pathPrefix: "/camoufox"
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     traefik.ingress.kubernetes.io/router.entrypoints: "websecure"

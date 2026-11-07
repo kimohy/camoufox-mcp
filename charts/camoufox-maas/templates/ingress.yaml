@@ -26,7 +26,7 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /
+          - path: {{ .Values.ingress.pathPrefix | default "/camoufox" }}
             pathType: Prefix
             backend:
               service:

@@ -192,12 +192,16 @@ def sanitize_profile_path(profile_name: str) -> Path:
 
 class AuthMiddleware:
     """
-    Pure ASGI Dual-Authentication Middleware.
-    1. Allows unauthenticated access to `/healthz`.
+    Pure ASGI Dual-Authentication & Multi-Purpose Path Prefix Middleware.
+    0. Supports an optional service prefix (`BASE_PATH_PREFIX`, default `/camoufox`) so a single
+       domain (e.g., `mcp.kimohy.kr`) can host multiple MCP servers under distinct path prefixes
+       (`/camoufox/mcp`, `/camoufox/s/{SECRET_URL_TOKEN}/mcp`, `/camoufox/healthz`) while also
+       accepting root-level requests when `URLRewrite` strips the prefix at the gateway.
+    1. Allows unauthenticated access to `/healthz` (and `{BASE_PATH_PREFIX}/healthz`).
     2. Authenticates requests carrying `Authorization: Bearer <token>` matching `MCP_API_KEYS`.
-    3. Authenticates requests whose path begins with `/s/{SECRET_URL_TOKEN}/...`, automatically
-       stripping `/s/{SECRET_URL_TOKEN}` from `scope["path"]` and `scope["raw_path"]` and setting
-       `scope["root_path"]` so downstream MCP Streamable HTTP / SSE routers work seamlessly.
+    3. Authenticates requests whose path begins with `/s/{SECRET_URL_TOKEN}/...` (or
+       `{BASE_PATH_PREFIX}/s/{SECRET_URL_TOKEN}/...`), automatically stripping the prefix and
+       setting `scope["root_path"]` so downstream MCP Streamable HTTP / SSE routers work seamlessly.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -209,6 +213,20 @@ class AuthMiddleware:
             return
 
         path: str = scope.get("path", "")
+        existing_root: str = scope.get("root_path", "").rstrip("/")
+
+        # 0. Strip BASE_PATH_PREFIX (e.g., "/camoufox") if present in incoming request path
+        base_prefix = (settings.BASE_PATH_PREFIX or "").strip().rstrip("/")
+        if base_prefix and not base_prefix.startswith("/"):
+            base_prefix = "/" + base_prefix
+
+        if base_prefix and (path == base_prefix or path.startswith(base_prefix + "/")):
+            path = path[len(base_prefix) :] or "/"
+            existing_root = f"{existing_root}{base_prefix}"
+            scope = dict(scope)
+            scope["path"] = path
+            scope["raw_path"] = path.encode("utf-8")
+            scope["root_path"] = existing_root
 
         # 1. Bypass auth for Kubernetes liveness/readiness probes
         if path == "/healthz" or path == "/healthz/":
@@ -222,13 +240,12 @@ class AuthMiddleware:
             # parts: ["", "s", "<candidate_token>", "<remainder_optional>"]
             candidate_token = parts[2] if len(parts) > 2 else ""
             if secret_token and candidate_token and hmac.compare_digest(candidate_token, secret_token):
-                prefix = f"/s/{candidate_token}"
+                token_prefix = f"/s/{candidate_token}"
                 remainder = "/" + parts[3] if len(parts) > 3 else "/"
                 new_scope = dict(scope)
                 new_scope["path"] = remainder
                 new_scope["raw_path"] = remainder.encode("utf-8")
-                existing_root = scope.get("root_path", "")
-                new_scope["root_path"] = f"{existing_root.rstrip('/')}{prefix}"
+                new_scope["root_path"] = f"{existing_root}{token_prefix}"
                 await self.app(new_scope, receive, send)
                 return
             else:
@@ -267,11 +284,15 @@ class AuthMiddleware:
             return
 
         # Neither URL token nor valid Bearer token was supplied
+        hint_prefix = base_prefix if base_prefix else ""
         response = JSONResponse(
             status_code=401,
             content={
                 "error": "Unauthorized",
-                "message": "Missing authentication. Provide 'Authorization: Bearer <API_KEY>' header or use '/s/<SECRET_URL_TOKEN>/mcp'.",
+                "message": (
+                    f"Missing authentication. Provide 'Authorization: Bearer <API_KEY>' header "
+                    f"or use '{hint_prefix}/s/<SECRET_URL_TOKEN>/mcp'."
+                ),
             },
             headers={"WWW-Authenticate": "Bearer"},
         )

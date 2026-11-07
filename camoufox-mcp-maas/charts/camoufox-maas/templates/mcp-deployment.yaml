@@ -57,6 +57,8 @@ spec:
           env:
             - name: BROWSER_WS_URL
               value: "ws://camoufox-browser-svc:{{ .Values.browserPool.port }}/{{ .Values.browserPool.wsPath }}"
+            - name: BASE_PATH_PREFIX
+              value: {{ .Values.mcpGateway.basePathPrefix | default "/camoufox" | quote }}
             - name: MCP_API_KEYS
               valueFrom:
                 secretKeyRef:
