@@ -125,6 +125,7 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str = "S256") -
 def get_external_base_url(request: Request) -> str:
     """Reconstruct external HTTPS base URL including BASE_PATH_PREFIX when behind a reverse proxy."""
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+    # Force https for non-localhost domains (e.g., behind Cloudflare / NGINX Gateway)
     host = (
         request.headers.get("x-forwarded-host")
         or request.headers.get("host")
@@ -182,29 +183,100 @@ async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
     )
 
 
-async def oauth_register_endpoint(request: Request) -> JSONResponse:
-    """RFC 7591 Dynamic Client Registration endpoint."""
+def derive_dcr_client_secret(client_id: str) -> str:
+    """Derive a stateless, deterministic HMAC-SHA256 client_secret for dynamically registered clients."""
+    key = settings.effective_signing_secret.encode("utf-8")
+    digest = hmac.new(key, f"dcr:{client_id}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"cfx-dcr-sec-{digest[:32]}"
+
+
+def is_valid_dcr_client(client_id: str, client_secret: str = "") -> bool:
+    """Validate whether client_id is a dynamically registered client (or static configured client)."""
+    if not client_id:
+        return False
+    expected_cid = settings.OAUTH_CLIENT_ID.strip()
+    if client_id == expected_cid:
+        return True
+    if client_id.startswith("cfx-dcr-"):
+        if not client_secret:
+            return True
+        return hmac.compare_digest(client_secret, derive_dcr_client_secret(client_id))
+    return False
+
+
+async def oauth_register_endpoint(request: Request) -> Response:
+    """
+    RFC 7591 Dynamic Client Registration (DCR) endpoint (`/oauth/register`).
+    Supports both public (`token_endpoint_auth_method="none"`) and confidential
+    (`client_secret_post` / `client_secret_basic`) dynamic OAuth 2.0 / 2.1 clients
+    such as Gemini Web, ChatGPT MCP Connectors, Claude Web/Desktop, and Cursor.
+    """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
+
     try:
         body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
     except Exception:
         body = {}
 
     redirect_uris = body.get("redirect_uris", [])
-    client_name = body.get("client_name", "MCP OAuth Client")
+    if isinstance(redirect_uris, str):
+        redirect_uris = [redirect_uris]
+
+    client_name = body.get("client_name", "MCP Dynamic OAuth Client")
+    requested_auth_method = body.get("token_endpoint_auth_method", "client_secret_post")
+    grant_types = body.get("grant_types") or ["authorization_code", "refresh_token", "client_credentials"]
+    response_types = body.get("response_types") or ["code"]
+    scope = body.get("scope", "mcp openid profile offline_access")
+
+    dcr_client_id = f"cfx-dcr-{secrets.token_hex(8)}"
+    dcr_client_secret = derive_dcr_client_secret(dcr_client_id)
+    issued_at = int(time.time())
+
+    response_payload: Dict[str, Any] = {
+        "client_id": dcr_client_id,
+        "client_id_issued_at": issued_at,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "grant_types": grant_types,
+        "response_types": response_types,
+        "token_endpoint_auth_method": requested_auth_method,
+        "scope": scope,
+    }
+
+    # Always provide client_secret unless the client explicitly registered as a public client ("none")
+    if requested_auth_method != "none":
+        response_payload["client_secret"] = dcr_client_secret
+        response_payload["client_secret_expires_at"] = 0
+
+    for optional_field in ("client_uri", "logo_uri", "tos_uri", "policy_uri", "software_id", "software_version"):
+        if optional_field in body:
+            response_payload[optional_field] = body[optional_field]
+
+    logger.info(
+        "DCR registered new OAuth client: client_id=%s client_name=%s auth_method=%s redirect_uris=%s",
+        dcr_client_id,
+        client_name,
+        requested_auth_method,
+        redirect_uris,
+    )
+
     return JSONResponse(
         status_code=201,
-        content={
-            "client_id": settings.OAUTH_CLIENT_ID,
-            "client_secret": settings.effective_oauth_secret,
-            "client_id_issued_at": int(time.time()),
-            "client_secret_expires_at": 0,
-            "client_name": client_name,
-            "redirect_uris": redirect_uris,
-            "grant_types": ["authorization_code", "client_credentials", "refresh_token"],
-            "response_types": ["code"],
-            "token_endpoint_auth_method": "client_secret_post",
+        content=response_payload,
+        headers={
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
         },
-        headers={"Access-Control-Allow-Origin": "*"},
     )
 
 
@@ -238,11 +310,9 @@ async def oauth_authorize_endpoint(request: Request) -> Response:
         )
 
     expected_client_id = settings.OAUTH_CLIENT_ID.strip()
-    if expected_client_id and client_id and client_id != expected_client_id:
-        return JSONResponse(
-            status_code=401,
-            content={"error": "invalid_client", "error_description": "Unknown client_id."},
-        )
+    if client_id and not is_valid_dcr_client(client_id):
+        # Also allow arbitrary client_ids in DCR/public PKCE flows so third-party platforms with pre-assigned IDs work seamlessly
+        logger.info("Allowing external/DCR client_id in /oauth/authorize: %s", client_id)
 
     code = create_signed_token(
         {
@@ -281,7 +351,7 @@ def _extract_basic_auth(request: Request) -> Tuple[str, str]:
     return "", ""
 
 
-async def oauth_token_endpoint(request: Request) -> JSONResponse:
+async def oauth_token_endpoint(request: Request) -> Response:
     """
     OAuth 2.0 Token Endpoint (`/oauth/token`).
     Supports:
@@ -289,6 +359,16 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     - `client_credentials` (direct Client ID & Client Secret exchange)
     - `refresh_token`
     """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
+
     params: Dict[str, str] = {}
     content_type = request.headers.get("content-type", "").lower()
     if "application/json" in content_type:
@@ -314,10 +394,12 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     expected_cid = settings.OAUTH_CLIENT_ID.strip()
     expected_csec = settings.effective_oauth_secret
 
-    def _is_valid_secret(sec: str) -> bool:
+    def _is_valid_secret(sec: str, cid: str = "") -> bool:
         if not sec:
             return False
         if expected_csec and hmac.compare_digest(sec, expected_csec):
+            return True
+        if cid and cid.startswith("cfx-dcr-") and hmac.compare_digest(sec, derive_dcr_client_secret(cid)):
             return True
         return any(hmac.compare_digest(sec, k) for k in settings.api_keys_list)
 
@@ -330,13 +412,7 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
     )
 
     if grant_type == "client_credentials":
-        if expected_cid and client_id and not hmac.compare_digest(client_id, expected_cid):
-            return JSONResponse(
-                status_code=401,
-                content={"error": "invalid_client", "error_description": "Invalid client_id."},
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
-        if not _is_valid_secret(client_secret):
+        if not _is_valid_secret(client_secret, client_id):
             return JSONResponse(
                 status_code=401,
                 content={"error": "invalid_client", "error_description": "Invalid client_secret."},
@@ -369,7 +445,8 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
                 headers={"Access-Control-Allow-Origin": "*"},
             )
 
-        if client_secret and not _is_valid_secret(client_secret):
+        effective_cid = client_id or code_payload.get("cid", expected_cid)
+        if client_secret and not _is_valid_secret(client_secret, effective_cid):
             return JSONResponse(
                 status_code=401,
                 content={"error": "invalid_client", "error_description": "Invalid client_secret."},
@@ -386,6 +463,7 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
                 headers={"Access-Control-Allow-Origin": "*"},
             )
 
+        # Require either valid client_secret or valid PKCE challenge
         if not client_secret and not code_challenge and expected_csec:
             return JSONResponse(
                 status_code=401,
@@ -424,7 +502,8 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
                 content={"error": "invalid_grant", "error_description": "Invalid or expired refresh_token."},
                 headers={"Access-Control-Allow-Origin": "*"},
             )
-        if client_secret and not _is_valid_secret(client_secret):
+        effective_cid = client_id or rt_payload.get("cid", expected_cid)
+        if client_secret and not _is_valid_secret(client_secret, effective_cid):
             return JSONResponse(
                 status_code=401,
                 content={"error": "invalid_client", "error_description": "Invalid client_secret."},

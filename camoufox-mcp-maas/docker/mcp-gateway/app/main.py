@@ -555,9 +555,9 @@ def _create_combined_asgi_app() -> AuthMiddleware:
             endpoint=oauth_protected_resource_metadata,
             methods=["GET", "HEAD"],
         ),
-        Route("/oauth/authorize", endpoint=oauth_authorize_endpoint, methods=["GET", "POST"]),
-        Route("/oauth/token", endpoint=oauth_token_endpoint, methods=["POST"]),
-        Route("/oauth/register", endpoint=oauth_register_endpoint, methods=["POST"]),
+        Route("/oauth/authorize", endpoint=oauth_authorize_endpoint, methods=["GET", "POST", "OPTIONS"]),
+        Route("/oauth/token", endpoint=oauth_token_endpoint, methods=["POST", "OPTIONS"]),
+        Route("/oauth/register", endpoint=oauth_register_endpoint, methods=["POST", "OPTIONS"]),
     ]
 
     # Collect routes from both streamable_http_app (/mcp) and sse_app (/sse, /messages)

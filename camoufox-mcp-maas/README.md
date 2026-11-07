@@ -228,23 +228,28 @@ Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 
 
 Google Gemini 웹 앱 또는 OAuth 2.0/2.1 인증을 요구하는 MCP 커넥터에서는 **OAuth Client ID & Client Secret** 방식과 **URL Path 시크릿 토큰** 방식을 모두 지원합니다.
 
-#### 방식 A: OAuth 2.0 (`Client ID` & `Client Secret`) 연동 (권장)
-`mcp-gateway`는 RFC 8414 / RFC 9728 자동 디스커버리(`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`) 및 Authorization Code(+PKCE), Client Credentials, Refresh Token 그랜트를 자체 내장하고 있습니다.
+#### 방식 A: OAuth 2.0 / 2.1 연동 (DCR 자동 등록 또는 수동 `Client ID` & `Client Secret`)
+`mcp-gateway`는 RFC 8414 / RFC 9728 자동 디스커버리(`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`), **RFC 7591 동적 클라이언트 등록(DCR, `/oauth/register`)**, 및 Authorization Code(+PKCE), Client Credentials, Refresh Token 그랜트를 자체 내장하고 있습니다.
 
-* **MCP Server URL (Endpoint)**:
-  ```text
-  https://mcp.yourdomain.com/camoufox/mcp
-  ```
-* **OAuth Client ID**: `OAUTH_CLIENT_ID` 설정값 (기본값: `camoufox-mcp-client`)
-* **OAuth Client Secret**: `OAUTH_CLIENT_SECRET` 설정값
-* **Authorization URL** (수동 입력 필요 시):
-  ```text
-  https://mcp.yourdomain.com/camoufox/oauth/authorize
-  ```
-* **Token URL** (수동 입력 필요 시):
-  ```text
-  https://mcp.yourdomain.com/camoufox/oauth/token
-  ```
+1. **DCR (Dynamic Client Registration) 방식 (ChatGPT, Claude, Cursor 등)**:
+   * `Client ID` / `Client Secret` 입력란을 비워두고 **MCP Server URL**만 입력하면 클라이언트가 `/camoufox/oauth/register`를 호출하여 고유 `client_id`(`cfx-dcr-...`)와 `client_secret`을 자동으로 발급받아 즉시 연결됩니다.
+   * **MCP Server URL**: `https://mcp.yourdomain.com/camoufox/mcp`
+
+2. **수동 `Client ID` & `Client Secret` 입력 방식 (Gemini Web 등)**:
+   * **MCP Server URL (Endpoint)**:
+     ```text
+     https://mcp.yourdomain.com/camoufox/mcp
+     ```
+   * **OAuth Client ID**: `OAUTH_CLIENT_ID` 설정값 (기본값: `camoufox-mcp-client`)
+   * **OAuth Client Secret**: `OAUTH_CLIENT_SECRET` 설정값
+   * **Authorization URL** (수동 입력 필요 시):
+     ```text
+     https://mcp.yourdomain.com/camoufox/oauth/authorize
+     ```
+   * **Token URL** (수동 입력 필요 시):
+     ```text
+     https://mcp.yourdomain.com/camoufox/oauth/token
+     ```
 
 #### 방식 B: URL Path 시크릿 토큰 연동 (헤더/OAuth 미지원 클라이언트용)
 커스텀 HTTP 헤더(`Authorization`)나 OAuth 설정을 지원하지 않는 웹 기반 클라이언트에서는 `/camoufox/s/{SECRET_URL_TOKEN}/...` 엔드포인트를 사용합니다.
