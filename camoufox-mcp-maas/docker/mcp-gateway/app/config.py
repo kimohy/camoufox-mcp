@@ -27,6 +27,22 @@ class Settings(BaseSettings):
         default="",
         description="Path-based secret token (/camoufox/s/{SECRET_URL_TOKEN}/mcp) for clients that cannot set custom headers.",
     )
+    OAUTH_CLIENT_ID: str = Field(
+        default="camoufox-mcp-client",
+        description="OAuth 2.0 Client ID for Gemini Web and MCP OAuth 2.1 clients.",
+    )
+    OAUTH_CLIENT_SECRET: str = Field(
+        default="",
+        description="OAuth 2.0 Client Secret for Gemini Web and MCP OAuth 2.1 clients.",
+    )
+    OAUTH_SIGNING_SECRET: str = Field(
+        default="",
+        description="HMAC signing key for stateless OAuth authorization codes and access tokens (defaults to OAUTH_CLIENT_SECRET or MCP_API_KEYS).",
+    )
+    OAUTH_TOKEN_TTL_SECONDS: int = Field(
+        default=86400 * 30,
+        description="OAuth access token lifetime in seconds (default 30 days).",
+    )
     BASE_PATH_PREFIX: str = Field(
         default="/camoufox",
         description="Optional service path prefix (e.g., '/camoufox') when sharing an MCP domain across multiple services.",
@@ -60,6 +76,21 @@ class Settings(BaseSettings):
         if not self.MCP_API_KEYS:
             return []
         return [key.strip() for key in self.MCP_API_KEYS.split(",") if key.strip()]
+
+    @property
+    def effective_oauth_secret(self) -> str:
+        """Return the configured OAuth Client Secret (falling back to the first MCP API key if unset)."""
+        if self.OAUTH_CLIENT_SECRET and self.OAUTH_CLIENT_SECRET.strip():
+            return self.OAUTH_CLIENT_SECRET.strip()
+        keys = self.api_keys_list
+        return keys[0] if keys else ""
+
+    @property
+    def effective_signing_secret(self) -> str:
+        """Return HMAC signing secret for stateless OAuth tokens."""
+        if self.OAUTH_SIGNING_SECRET and self.OAUTH_SIGNING_SECRET.strip():
+            return self.OAUTH_SIGNING_SECRET.strip()
+        return self.effective_oauth_secret or self.SECRET_URL_TOKEN or "camoufox-default-signing-key"
 
     @property
     def profile_dir_path(self) -> Path:

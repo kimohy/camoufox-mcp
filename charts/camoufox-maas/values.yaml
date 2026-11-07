@@ -67,6 +67,9 @@ auth:
   mcpApiKeys: "cfx-prod-key-change-me-1,cfx-prod-key-change-me-2"
   # Secret URL token for headerless clients (e.g., Google Gemini Web App: /s/<secretUrlToken>/mcp)
   secretUrlToken: "gemini-stealth-url-secret-change-me"
+  # OAuth 2.0 / 2.1 Client Credentials (for Gemini Web / OAuth-enabled MCP clients)
+  oauthClientId: "camoufox-mcp-client"
+  oauthClientSecret: "cfx-oauth-secret-change-me"
 
 # -----------------------------------------------------------------------------
 # Traefik Ingress & TLS (cert-manager) Configuration

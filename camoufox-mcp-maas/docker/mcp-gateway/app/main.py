@@ -11,7 +11,16 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from app.config import settings
-from app.security import AuthMiddleware, is_safe_url, sanitize_profile_path
+from app.security import (
+    AuthMiddleware,
+    is_safe_url,
+    oauth_authorization_server_metadata,
+    oauth_authorize_endpoint,
+    oauth_protected_resource_metadata,
+    oauth_register_endpoint,
+    oauth_token_endpoint,
+    sanitize_profile_path,
+)
 from app.session_pool import session_pool
 
 logging.basicConfig(
@@ -512,6 +521,34 @@ def _create_combined_asgi_app() -> AuthMiddleware:
 
     routes = [
         Route("/healthz", endpoint=healthz_endpoint, methods=["GET", "HEAD"]),
+        Route(
+            "/.well-known/oauth-authorization-server",
+            endpoint=oauth_authorization_server_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            "/.well-known/openid-configuration",
+            endpoint=oauth_authorization_server_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            "/.well-known/oauth-protected-resource",
+            endpoint=oauth_protected_resource_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            "/.well-known/oauth-protected-resource/mcp",
+            endpoint=oauth_protected_resource_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            "/.well-known/oauth-protected-resource/sse",
+            endpoint=oauth_protected_resource_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route("/oauth/authorize", endpoint=oauth_authorize_endpoint, methods=["GET", "POST"]),
+        Route("/oauth/token", endpoint=oauth_token_endpoint, methods=["POST"]),
+        Route("/oauth/register", endpoint=oauth_register_endpoint, methods=["POST"]),
     ]
 
     # Collect routes from both streamable_http_app (/mcp) and sse_app (/sse, /messages)
