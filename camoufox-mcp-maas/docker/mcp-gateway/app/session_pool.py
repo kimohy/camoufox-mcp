@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,10 +48,41 @@ class CamoufoxSessionPool:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._sessions: Dict[str, SessionEntry] = {}
+        self._profile_locks: Dict[str, asyncio.Lock] = {}
         self._pool_lock = asyncio.Lock()
         self._browser_lock = asyncio.Lock()
         self._gc_task: Optional[asyncio.Task] = None
         self._closing: bool = False
+
+    async def get_profile_lock(self, profile_path: Path) -> asyncio.Lock:
+        """Return a per-profile asyncio.Lock to serialize concurrent reads/writes to the same profile JSON."""
+        key = str(profile_path.resolve())
+        async with self._pool_lock:
+            lock = self._profile_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._profile_locks[key] = lock
+            return lock
+
+    async def save_storage_state_atomic(self, context: BrowserContext, target_path: Path) -> None:
+        """
+        Atomically persist a BrowserContext's cookies and localStorage to `target_path`
+        using a per-profile lock and temporary file + `os.replace()` to prevent corrupted JSON
+        when multiple sessions save to the same profile name concurrently.
+        """
+        prof_lock = await self.get_profile_lock(target_path)
+        async with prof_lock:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = target_path.with_name(f".{target_path.name}.{secrets.token_hex(6)}.tmp")
+            try:
+                await context.storage_state(path=str(tmp_path))
+                os.replace(str(tmp_path), str(target_path))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
 
     async def start(self) -> None:
         """Initialize background garbage collection task."""

@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import contextvars
 import hashlib
 import hmac
 import ipaddress
 import json
 import logging
+import os
 import re
 import secrets
 import socket
@@ -45,6 +47,30 @@ BLOCKED_HOST_SUFFIXES = (
 )
 
 PROFILE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# ContextVariables holding the authenticated tenant namespace and client connection key per request
+current_tenant_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_tenant_id", default="anonymous"
+)
+current_client_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_client_key", default=""
+)
+
+
+def _derive_tenant_id(prefix: str, raw_identity: str) -> str:
+    """Create a deterministic, filesystem-safe tenant namespace identifier."""
+    digest = hashlib.sha256(raw_identity.strip().lower().encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{digest}"
+
+
+def get_current_tenant_id() -> str:
+    """Return the authenticated tenant namespace ID for the current async execution context."""
+    return current_tenant_id.get()
+
+
+def get_current_client_key() -> str:
+    """Return the client-level connection key (e.g., OAuth token jti) for default session isolation."""
+    return current_client_key.get()
 
 OAUTH_PUBLIC_PATHS = {
     "/healthz",
@@ -660,12 +686,24 @@ async def oauth_token_endpoint(request: Request) -> Response:
 
         ttl = settings.OAUTH_TOKEN_TTL_SECONDS
         scope = code_payload.get("scope", "mcp")
+        sub_identity = code_payload.get("sub", "")
+        effective_cid_for_token = code_payload.get("cid", expected_cid)
         access_token = create_signed_token(
-            {"typ": "access_token", "cid": code_payload.get("cid", expected_cid), "scope": scope},
+            {
+                "typ": "access_token",
+                "cid": effective_cid_for_token,
+                "scope": scope,
+                "sub": sub_identity,
+            },
             ttl_seconds=ttl,
         )
         refresh_token = create_signed_token(
-            {"typ": "refresh_token", "cid": code_payload.get("cid", expected_cid), "scope": scope},
+            {
+                "typ": "refresh_token",
+                "cid": effective_cid_for_token,
+                "scope": scope,
+                "sub": sub_identity,
+            },
             ttl_seconds=ttl * 2,
         )
         return JSONResponse(
@@ -700,7 +738,12 @@ async def oauth_token_endpoint(request: Request) -> Response:
         ttl = settings.OAUTH_TOKEN_TTL_SECONDS
         scope = rt_payload.get("scope", "mcp")
         access_token = create_signed_token(
-            {"typ": "access_token", "cid": rt_payload.get("cid", expected_cid), "scope": scope},
+            {
+                "typ": "access_token",
+                "cid": rt_payload.get("cid", expected_cid),
+                "scope": scope,
+                "sub": rt_payload.get("sub", ""),
+            },
             ttl_seconds=ttl,
         )
         return JSONResponse(
@@ -845,8 +888,11 @@ async def ssrf_route_interceptor(route: Route, request: PwRequest) -> None:
         pass
 
 
-def sanitize_profile_path(profile_name: str) -> Path:
-    """Validate profile_name and prevent path traversal attacks outside PROFILE_STORAGE_DIR."""
+def sanitize_profile_path(profile_name: str, tenant_id: Optional[str] = None) -> Path:
+    """
+    Validate profile_name, isolate storage per authenticated tenant (`/data/profiles/{tenant_id}/{profile_name}.json`),
+    and prevent path traversal attacks outside the tenant's profile directory.
+    """
     clean_name = (profile_name or "").strip()
     if clean_name.endswith(".json"):
         clean_name = clean_name[:-5]
@@ -857,10 +903,17 @@ def sanitize_profile_path(profile_name: str) -> Path:
             "up to 64 characters are permitted."
         )
 
-    base_dir = settings.profile_dir_path
-    target_path = (base_dir / f"{clean_name}.json").resolve()
+    effective_tenant = (tenant_id or get_current_tenant_id() or "anonymous").strip()
+    if not PROFILE_NAME_PATTERN.match(effective_tenant):
+        effective_tenant = _derive_tenant_id("tenant", effective_tenant)
 
-    if base_dir not in target_path.parents:
+    tenant_dir = (settings.profile_dir_path / effective_tenant).resolve()
+    if settings.profile_dir_path not in tenant_dir.parents and tenant_dir != settings.profile_dir_path:
+        raise ValueError("Invalid tenant directory resolution.")
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = (tenant_dir / f"{clean_name}.json").resolve()
+    if tenant_dir not in target_path.parents:
         raise ValueError("Path traversal detected in profile_name.")
 
     return target_path
@@ -868,7 +921,7 @@ def sanitize_profile_path(profile_name: str) -> Path:
 
 class AuthMiddleware:
     """
-    Pure ASGI Triple-Authentication & Multi-Purpose Path Prefix Middleware.
+    Pure ASGI Triple-Authentication, Multi-Tenant Isolation & Multi-Purpose Path Prefix Middleware.
     0. Supports an optional service prefix (`BASE_PATH_PREFIX`, default `/camoufox`) so a single
        domain (e.g., `mcp.kimohy.kr`) can host multiple MCP servers under distinct path prefixes.
     1. Allows unauthenticated access to `/healthz` and OAuth 2.0 discovery/authorization/token endpoints.
@@ -876,6 +929,9 @@ class AuthMiddleware:
        - An OAuth 2.0 signed `access_token` (`cfx_oauth....`) issued via `/oauth/token`
        - Any static key in `MCP_API_KEYS` or `OAUTH_CLIENT_SECRET`
     3. Authenticates requests whose path begins with `/s/{SECRET_URL_TOKEN}/...`.
+    4. Binds a deterministic `tenant_id` and `client_key` to `contextvars` so every user's browser
+       sessions (`{tenant_id}:{session_id}`) and saved profiles (`/data/profiles/{tenant_id}/`)
+       are strictly isolated from other users.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -919,7 +975,14 @@ class AuthMiddleware:
                 new_scope["path"] = remainder
                 new_scope["raw_path"] = remainder.encode("utf-8")
                 new_scope["root_path"] = f"{existing_root}{token_prefix}"
-                await self.app(new_scope, receive, send)
+                tenant_val = _derive_tenant_id("urltok", candidate_token)
+                t_tok = current_tenant_id.set(tenant_val)
+                c_tok = current_client_key.set(tenant_val)
+                try:
+                    await self.app(new_scope, receive, send)
+                finally:
+                    current_tenant_id.reset(t_tok)
+                    current_client_key.reset(c_tok)
                 return
             else:
                 response = JSONResponse(
@@ -946,12 +1009,36 @@ class AuthMiddleware:
             provided_token = auth_header[7:].strip()
             if provided_token:
                 # 3a. Verify OAuth 2.0 signed access_token
-                if verify_signed_token(provided_token, expected_type="access_token") is not None:
-                    await self.app(scope, receive, send)
+                oauth_payload = verify_signed_token(provided_token, expected_type="access_token")
+                if oauth_payload is not None:
+                    sub = (oauth_payload.get("sub") or "").strip()
+                    cid = (oauth_payload.get("cid") or "oauth").strip()
+                    jti = (oauth_payload.get("jti") or cid).strip()
+                    tenant_val = (
+                        _derive_tenant_id("sso", sub)
+                        if sub
+                        else _derive_tenant_id("cid", cid)
+                    )
+                    client_val = _derive_tenant_id("tok", f"{cid}:{jti}")
+                    t_tok = current_tenant_id.set(tenant_val)
+                    c_tok = current_client_key.set(client_val)
+                    try:
+                        await self.app(scope, receive, send)
+                    finally:
+                        current_tenant_id.reset(t_tok)
+                        current_client_key.reset(c_tok)
                     return
+
                 # 3b. Verify static API key or OAuth Client Secret
                 if any(hmac.compare_digest(provided_token, valid_key) for valid_key in valid_api_keys):
-                    await self.app(scope, receive, send)
+                    tenant_val = _derive_tenant_id("apikey", provided_token)
+                    t_tok = current_tenant_id.set(tenant_val)
+                    c_tok = current_client_key.set(tenant_val)
+                    try:
+                        await self.app(scope, receive, send)
+                    finally:
+                        current_tenant_id.reset(t_tok)
+                        current_client_key.reset(c_tok)
                     return
 
             response = JSONResponse(

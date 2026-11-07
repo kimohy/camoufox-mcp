@@ -14,6 +14,8 @@ from starlette.routing import Mount, Route
 from app.config import settings
 from app.security import (
     AuthMiddleware,
+    get_current_client_key,
+    get_current_tenant_id,
     is_safe_url,
     oauth_authorization_server_metadata,
     oauth_authorize_endpoint,
@@ -42,16 +44,24 @@ mcp = FastMCP(
 
 def resolve_session_id(ctx: Optional[Context], explicit_session_id: Optional[str] = None) -> str:
     """
-    Resolve the isolated browser session ID.
-    Priority:
+    Resolve the tenant-isolated browser session ID (`{tenant_id}:{raw_session_id}`).
+    Guarantees that even if two different users or API keys specify the exact same `session_id`
+    (or omit `session_id`), they are strictly sandboxed into separate namespaces and can never
+    view or hijack another user's browser tab or cookies.
+
+    Priority for `raw_session_id`:
     1. Explicitly passed `session_id` tool parameter.
     2. HTTP Request header `mcp-session-id` or `x-session-id` from the MCP request context.
-    3. Client ID or fallback `"default-session"`.
+    3. MCP server session object ID or OAuth token client key (`jti`).
+    4. Fallback `"default-session"`.
     """
-    if explicit_session_id and explicit_session_id.strip():
-        return explicit_session_id.strip()
+    tenant_id = get_current_tenant_id() or "anonymous"
+    raw_sid = ""
 
-    if ctx is not None:
+    if explicit_session_id and explicit_session_id.strip():
+        raw_sid = explicit_session_id.strip()
+
+    if not raw_sid and ctx is not None:
         try:
             req_ctx = getattr(ctx, "request_context", None)
             if req_ctx is not None:
@@ -60,20 +70,30 @@ def resolve_session_id(ctx: Optional[Context], explicit_session_id: Optional[str
                     for header_name in ("mcp-session-id", "x-mcp-session-id", "x-session-id"):
                         hdr_val = req.headers.get(header_name)
                         if hdr_val and hdr_val.strip():
-                            return hdr_val.strip()
-                session_obj = getattr(req_ctx, "session", None)
-                if session_obj is not None:
-                    return f"mcp-sess-{id(session_obj)}"
+                            raw_sid = hdr_val.strip()
+                            break
+                if not raw_sid:
+                    session_obj = getattr(req_ctx, "session", None)
+                    if session_obj is not None:
+                        raw_sid = f"mcp-sess-{id(session_obj)}"
         except Exception:
             pass
 
-        try:
-            if getattr(ctx, "client_id", None):
-                return str(ctx.client_id)
-        except Exception:
-            pass
+        if not raw_sid:
+            try:
+                if getattr(ctx, "client_id", None):
+                    raw_sid = str(ctx.client_id)
+            except Exception:
+                pass
 
-    return "default-session"
+    if not raw_sid:
+        client_key = get_current_client_key()
+        raw_sid = client_key if client_key else "default-session"
+
+    # Prefix with authenticated tenant_id so cross-tenant session collision is impossible
+    if raw_sid.startswith(f"{tenant_id}:"):
+        return raw_sid
+    return f"{tenant_id}:{raw_sid}"
 
 
 @mcp.tool()
@@ -398,21 +418,24 @@ async def save_profile(
     ctx: Optional[Context] = None,
 ) -> str:
     """
-    Persist the current BrowserContext's cookies and localStorage to
-    `/data/profiles/{profile_name}.json` with strict path traversal protection.
+    Persist the current BrowserContext's cookies and localStorage atomically to the authenticated
+    tenant's isolated directory (`/data/profiles/{tenant_id}/{profile_name}.json`) with path traversal
+    and concurrent-write corruption protection.
     """
-    target_path = sanitize_profile_path(profile_name)
+    tenant_id = get_current_tenant_id()
+    target_path = sanitize_profile_path(profile_name, tenant_id=tenant_id)
     sid = resolve_session_id(ctx, session_id)
     entry = await session_pool.get_or_create_session(session_id=sid)
 
     async with entry.lock:
         entry.touch()
-        await entry.context.storage_state(path=str(target_path))
+        await session_pool.save_storage_state_atomic(entry.context, target_path)
         entry.profile_name = target_path.stem
 
     return json.dumps(
         {
             "status": "ok",
+            "tenant_id": tenant_id,
             "session_id": sid,
             "profile_name": target_path.stem,
             "saved_path": str(target_path),
@@ -430,30 +453,35 @@ async def load_profile(
 ) -> str:
     """
     Re-initialize the session's BrowserContext using the saved cookies and localStorage
-    from `/data/profiles/{profile_name}.json`.
+    from the authenticated tenant's isolated storage (`/data/profiles/{tenant_id}/{profile_name}.json`).
     """
-    target_path = sanitize_profile_path(profile_name)
+    tenant_id = get_current_tenant_id()
+    target_path = sanitize_profile_path(profile_name, tenant_id=tenant_id)
     if not target_path.is_file():
         return json.dumps(
             {
                 "status": "error",
-                "error": f"Profile '{target_path.stem}' does not exist at {target_path}",
+                "tenant_id": tenant_id,
+                "error": f"Profile '{target_path.stem}' does not exist in tenant namespace '{tenant_id}'.",
             },
             ensure_ascii=False,
             indent=2,
         )
 
     sid = resolve_session_id(ctx, session_id)
-    entry = await session_pool.get_or_create_session(
-        session_id=sid,
-        storage_state_path=target_path,
-        profile_name=target_path.stem,
-        force_recreate=True,
-    )
+    prof_lock = await session_pool.get_profile_lock(target_path)
+    async with prof_lock:
+        entry = await session_pool.get_or_create_session(
+            session_id=sid,
+            storage_state_path=target_path,
+            profile_name=target_path.stem,
+            force_recreate=True,
+        )
 
     return json.dumps(
         {
             "status": "ok",
+            "tenant_id": tenant_id,
             "session_id": sid,
             "profile_name": entry.profile_name,
             "loaded_from": str(target_path),

@@ -55,7 +55,10 @@
 
 ### 왜 Camoufox MaaS인가?
 * **C++ 엔진 레벨 스푸핑**: 일반적인 `playwright-extra-stealth`와 같은 JS 패치 방식은 Cloudflare Turnstile, DataDome, Akamai Bot Manager의 `iframe`/WebWorker/WebGL/AudioContext 검사를 통과하지 못합니다. Camoufox는 Firefox C++ 소스 레벨에서 핑거프린트를 재작성하고 `Xvfb` 위에서 **Headful 모드(`headless=False`)** 및 **인간형 베지어 곡선 마우스 이동(`humanize=True`)**으로 동작합니다.
-* **멀티세션 완벽 격리**: 하나의 브라우저 풀 위에 여러 AI 에이전트가 동시 접속하더라도 `session_id`별로 쿠키, 로컬스토리지, 프록시, 뷰포트가 분리된 `BrowserContext`를 할당받습니다.
+* **멀티테넌트 & 멀티세션 완벽 격리 (Zero Cross-Tenant Leakage)**:
+  * **인증 주체(`tenant_id`) 기반 네임스페이스 강제 분리**: Google SSO 사용자 이메일(`sso_<hash>`), 정적 API Key(`apikey_<hash>`), OAuth 클라이언트(`cid_<hash>`), URL 토큰(`urltok_<hash>`)별로 독립된 `tenant_id`가 `contextvars`에 바인딩됩니다.
+  * **세션 하이재킹 원천 차단 (`{tenant_id}:{session_id}`)**: 서로 다른 두 사용자가 똑같이 `session_id="work"`를 지정하거나 생략하더라도, 내부적으로는 `sso_a1b2c3d4:work`와 `sso_99887766:work`로 완벽히 분리되어 **타인의 브라우저 화면, 탭, 쿠키를 절대 열람하거나 제어할 수 없습니다.**
+  * **사용자별 프로필 디렉터리 물리 분리 & Atomic Write (`/data/profiles/{tenant_id}/{profile_name}.json`)**: 저장된 로그인 프로필 역시 사용자별 하위 디렉터리에 격리되며, 임시 파일(`.tmp`) 기록 후 `os.replace()` 원자적 교체 및 프로필별 `asyncio.Lock`을 통해 동시 저장 시 파일 손상(Race Condition)을 방지합니다.
 * **다목적 MCP 도메인 라우팅 (`BASE_PATH_PREFIX="/camoufox"`)**: 단일 도메인(예: `mcp.yourdomain.com`)에서 여러 MCP 서버를 운영할 수 있도록 `/camoufox` 서비스 경로 프리픽스 및 RFC 8414 멀티패스 디스커버리(`/.well-known/oauth-authorization-server/camoufox`)를 기본 지원합니다.
 * **3중 SSRF 및 엔터프라이즈 인증 방어**:
   1. **Triple-Auth & Google SSO (`AuthMiddleware`)**:
@@ -413,8 +416,8 @@ if __name__ == "__main__":
 | `fill` | `selector: str`<br>`text: str`<br>`press_enter: bool = False`<br>`session_id?: str` | JSON 문자열 (`typed_length`, `current_url`) | 요소를 클릭한 뒤 `press_sequentially(text, delay=65)`로 사람처럼 한 글자씩 타이핑합니다. |
 | `evaluate_js` | `script: str`<br>`session_id?: str` | JSON 문자열 (`result`) | 현재 페이지 DOM 컨텍스트에서 임의의 JavaScript 표현식/함수를 실행합니다. |
 | `take_screenshot` | `session_id?: str`<br>`full_page: bool = False` | `mcp.server.fastmcp.Image` (PNG 바이너리) | 멀티모달 LLM이 시각적으로 화면 레이아웃이나 차트, 캡차를 판독할 수 있도록 스크린샷을 반환합니다. |
-| `save_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`saved_path`) | 현재 세션의 쿠키/로컬스토리지를 `/data/profiles/{profile_name}.json`에 영구 저장합니다. |
-| `load_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`loaded_from`) | 저장된 프로필 파일로 격리된 `BrowserContext`를 즉시 복원합니다. |
+| `save_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `saved_path`) | 현재 세션의 쿠키/로컬스토리지를 인증된 사용자의 전용 디렉터리(`/data/profiles/{tenant_id}/{profile_name}.json`)에 원자적(Atomic Write)으로 영구 저장합니다. |
+| `load_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `loaded_from`) | 인증된 사용자의 전용 디렉터리에서 저장된 프로필 파일로 격리된 `BrowserContext`를 즉시 복원합니다(타 사용자 프로필 접근 불가). |
 | `close_session` | `session_id?: str` | JSON 문자열 (`closed`, `active_sessions`) | 작업이 끝난 브라우저 컨텍스트를 즉시 닫고 메모리를 반환합니다. |
 
 ---
@@ -441,9 +444,16 @@ if __name__ == "__main__":
 
 ---
 
-### 활용법 2: 병렬 멀티세션 격리 크롤링 (`session_id` 분리)
+### 활용법 2: 멀티테넌트 사용자 간 격리 및 병렬 멀티세션 크롤링 (`{tenant_id}:{session_id}`)
 
-단일 에이전트 또는 여러 에이전트가 동시에 서로 다른 사이트나 계정을 탐색할 때 `session_id`만 다르게 지정하면 쿠키와 탭이 전혀 섞이지 않습니다.
+여러 사용자가 동시에 접속하거나, 단일 사용자가 여러 에이전트(ChatGPT, Gemini, Claude)를 동시에 실행하더라도 **2단계 격리 구조**에 의해 브라우저 정보가 절대 섞이거나 노출되지 않습니다.
+
+1. **1단계 — 사용자(`tenant_id`) 간 강제 샌드박싱**:
+   * `AuthMiddleware`가 인증 수단(Google SSO 이메일, API Key 등)으로부터 고유 `tenant_id`를 추출해 모든 세션 ID 앞에 `{tenant_id}:` 프리픽스를 강제 결합합니다.
+   * 따라서 사용자 A와 사용자 B가 동시에 같은 `session_id="main"`이나 같은 `profile_name="github"`을 사용해도 서로의 탭, 스크린샷, 쿠키에 접근하는 것이 구조적으로 불가능합니다.
+2. **2단계 — 동일 사용자 내 멀티세션(`session_id`) 병렬 분리**:
+   * 같은 사용자가 동시에 여러 작업을 수행할 때는 `session_id`만 다르게 지정하면 쿠키와 탭이 독립된 `BrowserContext`로 실행됩니다.
+   * `session_id`를 생략하더라도 MCP 세션 객체 ID 또는 OAuth 토큰 고유 키(`jti`)별로 기본 세션이 분리됩니다.
 
 * **세션 A (한국 뉴스 수집)**: `session_id="kr-news-crawler"`
 * **세션 B (미국 주가 대시보드 모니터링)**: `session_id="us-finance-monitor"`
