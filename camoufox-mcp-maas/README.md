@@ -56,8 +56,12 @@
 ### 왜 Camoufox MaaS인가?
 * **C++ 엔진 레벨 스푸핑**: 일반적인 `playwright-extra-stealth`와 같은 JS 패치 방식은 Cloudflare Turnstile, DataDome, Akamai Bot Manager의 `iframe`/WebWorker/WebGL/AudioContext 검사를 통과하지 못합니다. Camoufox는 Firefox C++ 소스 레벨에서 핑거프린트를 재작성하고 `Xvfb` 위에서 **Headful 모드(`headless=False`)** 및 **인간형 베지어 곡선 마우스 이동(`humanize=True`)**으로 동작합니다.
 * **멀티세션 완벽 격리**: 하나의 브라우저 풀 위에 여러 AI 에이전트가 동시 접속하더라도 `session_id`별로 쿠키, 로컬스토리지, 프록시, 뷰포트가 분리된 `BrowserContext`를 할당받습니다.
-* **3중 SSRF 및 인증 방어**:
-  1. **Dual-Auth (`AuthMiddleware`)**: 정적 `Authorization: Bearer <API_KEY>` 헤더와 URL Path 시크릿(`/s/{SECRET_URL_TOKEN}/mcp`)을 동시에 지원합니다.
+* **다목적 MCP 도메인 라우팅 (`BASE_PATH_PREFIX="/camoufox"`)**: 단일 도메인(예: `mcp.yourdomain.com`)에서 여러 MCP 서버를 운영할 수 있도록 `/camoufox` 서비스 경로 프리픽스 및 RFC 8414 멀티패스 디스커버리(`/.well-known/oauth-authorization-server/camoufox`)를 기본 지원합니다.
+* **3중 SSRF 및 엔터프라이즈 인증 방어**:
+  1. **Triple-Auth & Google SSO (`AuthMiddleware`)**:
+     * **OAuth 2.1 + DCR (RFC 7591) + Google OIDC SSO**: ChatGPT, Gemini Web, Claude 등에서 URL만 입력해도 동적 클라이언트 등록(DCR)이 수행되며, `/oauth/authorize` 단계에서 **Google SSO 로그인 및 허용된 이메일(`ALLOWED_GOOGLE_EMAILS`) 검증**을 통과한 사용자에게만 토큰을 발급합니다.
+     * **정적 Bearer 토큰 (`MCP_API_KEYS`)**: CLI 및 백엔드 SDK용 API 키 인증을 지원합니다.
+     * **URL Path 시크릿 (`/camoufox/s/{SECRET_URL_TOKEN}/mcp`)**: 커스텀 헤더나 OAuth를 지원하지 않는 클라이언트를 위한 URL 시크릿 인증을 지원합니다.
   2. **Application & Playwright Route SSRF 차단**: 초기 URL뿐만 아니라 페이지 내부의 JS `fetch`/`XHR`, `<iframe>`, 302 리다이렉트가 사설 IP(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), 루프백(`127.0.0.1`), 클라우드 메타데이터(`169.254.169.254`), 클러스터 내부 도메인(`.svc`, `.cluster.local`)을 향할 경우 즉시 차단합니다.
   3. **Kubernetes `NetworkPolicy`**: CNI 커널 레벨에서 브라우저 파드가 클러스터 내부망으로 패킷을 보내는 것을 원천 차단합니다.
 
@@ -224,18 +228,25 @@ Google Gemini CLI에서는 Streamable HTTP 트랜스포트를 통해 두 가지 
     "https://mcp.yourdomain.com/camoufox/s/${SECRET_URL_TOKEN}/mcp"
   ```
 
-### 5.2. Google Gemini 웹 앱 (`gemini.google.com`) 및 Chrome 확장 (OAuth 2.0 / URL Secret)
+### 5.2. ChatGPT / Google Gemini 웹 앱 (`gemini.google.com`) / Claude Web (OAuth 2.1 + DCR + Google SSO)
 
-Google Gemini 웹 앱 또는 OAuth 2.0/2.1 인증을 요구하는 MCP 커넥터에서는 **OAuth Client ID & Client Secret** 방식과 **URL Path 시크릿 토큰** 방식을 모두 지원합니다.
+웹 기반 MCP 커넥터에서는 **DCR(동적 클라이언트 등록) + Google SSO 접근제어**, **수동 OAuth `Client ID` & `Client Secret`**, 그리고 **URL Path 시크릿 토큰** 방식을 모두 지원합니다.
 
-#### 방식 A: OAuth 2.0 / 2.1 연동 (DCR 자동 등록 또는 수동 `Client ID` & `Client Secret`)
-`mcp-gateway`는 RFC 8414 / RFC 9728 자동 디스커버리(`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`), **RFC 7591 동적 클라이언트 등록(DCR, `/oauth/register`)**, 및 Authorization Code(+PKCE), Client Credentials, Refresh Token 그랜트를 자체 내장하고 있습니다.
+#### 방식 A: OAuth 2.1 + DCR + Google SSO 연동 (권장)
+`mcp-gateway`는 RFC 8414 / RFC 9728 자동 디스커버리(`/.well-known/oauth-authorization-server/camoufox`, `/.well-known/oauth-protected-resource`), **RFC 7591 동적 클라이언트 등록(DCR, `/camoufox/oauth/register`)**, 및 **Google OIDC SSO 이메일 화이트리스트(`ALLOWED_GOOGLE_EMAILS`)**를 자체 내장하고 있습니다.
 
-1. **DCR (Dynamic Client Registration) 방식 (ChatGPT, Claude, Cursor 등)**:
-   * `Client ID` / `Client Secret` 입력란을 비워두고 **MCP Server URL**만 입력하면 클라이언트가 `/camoufox/oauth/register`를 호출하여 고유 `client_id`(`cfx-dcr-...`)와 `client_secret`을 자동으로 발급받아 즉시 연결됩니다.
+1. **Google Cloud Console 사전 설정 (Google SSO 사용 시)**:
+   * Google OAuth 2.0 클라이언트의 **승인된 리디렉션 URI(Authorized redirect URIs)**에 아래 주소를 추가합니다:
+     ```text
+     https://mcp.yourdomain.com/camoufox/oauth/callback
+     ```
+   * `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_GOOGLE_EMAILS`(예: `admin@gmail.com`) 환경 변수를 설정하면, 브라우저 인증 시 Google 로그인 화면으로 리다이렉트되며 허용된 이메일 계정만 접근이 승인됩니다.
+
+2. **DCR (Dynamic Client Registration) 자동 등록 (ChatGPT, Claude 등)**:
+   * `Client ID` / `Client Secret` 입력란을 비워두고 **MCP Server URL**만 입력하면 클라이언트가 `/camoufox/oauth/register`를 호출하여 고유 `client_id`(`cfx-dcr-...`)와 `client_secret`을 자동으로 발급받고 Google SSO 로그인 팝업을 통해 즉시 연결됩니다.
    * **MCP Server URL**: `https://mcp.yourdomain.com/camoufox/mcp`
 
-2. **수동 `Client ID` & `Client Secret` 입력 방식 (Gemini Web 등)**:
+3. **수동 `Client ID` & `Client Secret` 입력 방식 (Gemini Web 등)**:
    * **MCP Server URL (Endpoint)**:
      ```text
      https://mcp.yourdomain.com/camoufox/mcp
@@ -342,7 +353,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
-MCP_ENDPOINT = os.getenv("MCP_ENDPOINT", "https://mcp.yourdomain.com/mcp")
+MCP_ENDPOINT = os.getenv("MCP_ENDPOINT", "https://mcp.yourdomain.com/camoufox/mcp")
 MCP_API_KEY = os.getenv("MCP_API_KEY", "cfx-prod-key-change-me-1")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-api-key")
 
