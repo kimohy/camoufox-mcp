@@ -33,4 +33,18 @@ spec:
                 name: {{ .Release.Name }}-mcp-svc
                 port:
                   number: {{ .Values.mcpGateway.port }}
+          - path: /.well-known
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-mcp-svc
+                port:
+                  number: {{ .Values.mcpGateway.port }}
+          - path: /oauth
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-mcp-svc
+                port:
+                  number: {{ .Values.mcpGateway.port }}
 {{- end }}

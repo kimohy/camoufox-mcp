@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
 from mcp.server.fastmcp import Context, FastMCP, Image
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -32,6 +33,9 @@ logger = logging.getLogger("camoufox.main")
 mcp = FastMCP(
     "Camoufox-Stealth-MaaS",
     stateless_http=False,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
 )
 
 
@@ -527,7 +531,17 @@ def _create_combined_asgi_app() -> AuthMiddleware:
             methods=["GET", "HEAD"],
         ),
         Route(
+            "/.well-known/oauth-authorization-server/{subpath:path}",
+            endpoint=oauth_authorization_server_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
             "/.well-known/openid-configuration",
+            endpoint=oauth_authorization_server_metadata,
+            methods=["GET", "HEAD"],
+        ),
+        Route(
+            "/.well-known/openid-configuration/{subpath:path}",
             endpoint=oauth_authorization_server_metadata,
             methods=["GET", "HEAD"],
         ),
@@ -537,12 +551,7 @@ def _create_combined_asgi_app() -> AuthMiddleware:
             methods=["GET", "HEAD"],
         ),
         Route(
-            "/.well-known/oauth-protected-resource/mcp",
-            endpoint=oauth_protected_resource_metadata,
-            methods=["GET", "HEAD"],
-        ),
-        Route(
-            "/.well-known/oauth-protected-resource/sse",
+            "/.well-known/oauth-protected-resource/{subpath:path}",
             endpoint=oauth_protected_resource_metadata,
             methods=["GET", "HEAD"],
         ),

@@ -322,6 +322,14 @@ async def oauth_token_endpoint(request: Request) -> JSONResponse:
             return True
         return any(hmac.compare_digest(sec, k) for k in settings.api_keys_list)
 
+    logger.info(
+        "OAuth token request: grant_type=%s client_id=%s has_secret=%s has_verifier=%s",
+        grant_type,
+        client_id,
+        bool(client_secret),
+        bool(params.get("code_verifier")),
+    )
+
     if grant_type == "client_credentials":
         if expected_cid and client_id and not hmac.compare_digest(client_id, expected_cid):
             return JSONResponse(
