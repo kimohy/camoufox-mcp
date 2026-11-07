@@ -70,6 +70,10 @@ auth:
   # OAuth 2.0 / 2.1 Client Credentials (for Gemini Web / OAuth-enabled MCP clients)
   oauthClientId: "camoufox-mcp-client"
   oauthClientSecret: "cfx-oauth-secret-change-me"
+  # Federated Google SSO Access Control (only allowed Google emails can authorize DCR/OAuth)
+  googleClientId: ""
+  googleClientSecret: ""
+  allowedGoogleEmails: "kimohy@gmail.com"
 
 # -----------------------------------------------------------------------------
 # Traefik Ingress & TLS (cert-manager) Configuration

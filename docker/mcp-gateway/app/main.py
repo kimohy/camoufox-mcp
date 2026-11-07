@@ -17,6 +17,7 @@ from app.security import (
     is_safe_url,
     oauth_authorization_server_metadata,
     oauth_authorize_endpoint,
+    oauth_google_callback_endpoint,
     oauth_protected_resource_metadata,
     oauth_register_endpoint,
     oauth_token_endpoint,
@@ -556,6 +557,7 @@ def _create_combined_asgi_app() -> AuthMiddleware:
             methods=["GET", "HEAD"],
         ),
         Route("/oauth/authorize", endpoint=oauth_authorize_endpoint, methods=["GET", "POST", "OPTIONS"]),
+        Route("/oauth/callback", endpoint=oauth_google_callback_endpoint, methods=["GET", "POST"]),
         Route("/oauth/token", endpoint=oauth_token_endpoint, methods=["POST", "OPTIONS"]),
         Route("/oauth/register", endpoint=oauth_register_endpoint, methods=["POST", "OPTIONS"]),
     ]

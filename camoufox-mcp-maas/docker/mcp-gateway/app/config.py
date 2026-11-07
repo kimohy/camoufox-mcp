@@ -43,6 +43,22 @@ class Settings(BaseSettings):
         default=86400 * 30,
         description="OAuth access token lifetime in seconds (default 30 days).",
     )
+    GOOGLE_CLIENT_ID: str = Field(
+        default="",
+        description="Google OAuth 2.0 / OIDC Client ID for federated SSO user authentication.",
+    )
+    GOOGLE_CLIENT_SECRET: str = Field(
+        default="",
+        description="Google OAuth 2.0 / OIDC Client Secret for federated SSO user authentication.",
+    )
+    GOOGLE_CALLBACK_URL: str = Field(
+        default="",
+        description="Optional explicit Google OAuth redirect_uri override (e.g., 'https://mcp.kimohy.kr/camoufox/oauth/callback').",
+    )
+    ALLOWED_GOOGLE_EMAILS: str = Field(
+        default="kimohy@gmail.com",
+        description="Comma-separated list of Google email addresses allowed to authorize MCP OAuth sessions.",
+    )
     BASE_PATH_PREFIX: str = Field(
         default="/camoufox",
         description="Optional service path prefix (e.g., '/camoufox') when sharing an MCP domain across multiple services.",
@@ -91,6 +107,18 @@ class Settings(BaseSettings):
         if self.OAUTH_SIGNING_SECRET and self.OAUTH_SIGNING_SECRET.strip():
             return self.OAUTH_SIGNING_SECRET.strip()
         return self.effective_oauth_secret or self.SECRET_URL_TOKEN or "camoufox-default-signing-key"
+
+    @property
+    def google_sso_enabled(self) -> bool:
+        """Return True when both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured."""
+        return bool(self.GOOGLE_CLIENT_ID.strip() and self.GOOGLE_CLIENT_SECRET.strip())
+
+    @property
+    def allowed_google_emails_list(self) -> List[str]:
+        """Return normalized lowercase list of allowed Google email addresses."""
+        if not self.ALLOWED_GOOGLE_EMAILS:
+            return []
+        return [e.strip().lower() for e in self.ALLOWED_GOOGLE_EMAILS.split(",") if e.strip()]
 
     @property
     def profile_dir_path(self) -> Path:

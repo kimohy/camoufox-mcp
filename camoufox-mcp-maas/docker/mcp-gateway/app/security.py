@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import urllib.request
 
 from playwright.async_api import Request as PwRequest, Route
 from starlette.requests import Request
@@ -54,6 +55,7 @@ OAUTH_PUBLIC_PATHS = {
     "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-protected-resource/sse",
     "/oauth/authorize",
+    "/oauth/callback",
     "/oauth/token",
     "/oauth/register",
 }
@@ -280,13 +282,34 @@ async def oauth_register_endpoint(request: Request) -> Response:
     )
 
 
+def _resolve_google_callback_url(request: Request) -> str:
+    """Resolve the Google OAuth 2.0 redirect_uri pointing to this MCP Gateway's `/oauth/callback`."""
+    if settings.GOOGLE_CALLBACK_URL and settings.GOOGLE_CALLBACK_URL.strip():
+        return settings.GOOGLE_CALLBACK_URL.strip()
+    base_url = get_external_base_url(request)
+    return f"{base_url}/oauth/callback"
+
+
 async def oauth_authorize_endpoint(request: Request) -> Response:
     """
     OAuth 2.0 Authorization Endpoint (`/oauth/authorize`).
-    Supports both GET and POST. When `client_id` matches `OAUTH_CLIENT_ID` (or if auto-approve
-    is triggered by Gemini Web / Claude Web), issues a signed authorization `code` and redirects
-    back to `redirect_uri` with `code` and `state`.
+    When Google SSO (`GOOGLE_CLIENT_ID` & `GOOGLE_CLIENT_SECRET`) is configured:
+      - Encodes the downstream MCP client's OAuth parameters (`client_id`, `redirect_uri`,
+        `state`, `code_challenge`, `code_challenge_method`, `scope`) into a signed state token
+        and redirects the user's browser to Google's OIDC login (`accounts.google.com`).
+    Otherwise (fallback):
+      - Immediately issues a signed authorization `code` and redirects back to `redirect_uri`.
     """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
+
     params = dict(request.query_params)
     if request.method == "POST":
         try:
@@ -311,8 +334,41 @@ async def oauth_authorize_endpoint(request: Request) -> Response:
 
     expected_client_id = settings.OAUTH_CLIENT_ID.strip()
     if client_id and not is_valid_dcr_client(client_id):
-        # Also allow arbitrary client_ids in DCR/public PKCE flows so third-party platforms with pre-assigned IDs work seamlessly
         logger.info("Allowing external/DCR client_id in /oauth/authorize: %s", client_id)
+
+    # Federated Google SSO flow when GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET are configured
+    if settings.google_sso_enabled:
+        google_callback = _resolve_google_callback_url(request)
+        federated_state = create_signed_token(
+            {
+                "typ": "google_sso_state",
+                "cid": client_id or expected_client_id,
+                "ruri": redirect_uri,
+                "st": state,
+                "scope": scope,
+                "cc": code_challenge,
+                "ccm": code_challenge_method,
+                "gcb": google_callback,
+            },
+            ttl_seconds=600,
+        )
+        google_auth_params = urlencode(
+            {
+                "client_id": settings.GOOGLE_CLIENT_ID.strip(),
+                "redirect_uri": google_callback,
+                "response_type": "code",
+                "scope": "openid email profile",
+                "state": federated_state,
+                "prompt": "select_account",
+            }
+        )
+        google_auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{google_auth_params}"
+        logger.info(
+            "Redirecting OAuth authorize request (client_id=%s) to Google SSO (callback=%s)",
+            client_id or expected_client_id,
+            google_callback,
+        )
+        return RedirectResponse(url=google_auth_url, status_code=302)
 
     code = create_signed_token(
         {
@@ -331,6 +387,137 @@ async def oauth_authorize_endpoint(request: Request) -> Response:
     query_dict["code"] = code
     if state:
         query_dict["state"] = state
+
+    target_redirect = urlunparse(
+        parsed_redirect._replace(query=urlencode(query_dict))
+    )
+    return RedirectResponse(url=target_redirect, status_code=302)
+
+
+def _exchange_google_code_for_userinfo_sync(code: str, redirect_uri: str) -> Dict[str, Any]:
+    """Synchronously exchange Google authorization code for access_token/id_token and fetch verified userinfo."""
+    token_data = urlencode(
+        {
+            "code": code,
+            "client_id": settings.GOOGLE_CLIENT_ID.strip(),
+            "client_secret": settings.GOOGLE_CLIENT_SECRET.strip(),
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+    ).encode("utf-8")
+
+    token_req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=token_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(token_req, timeout=15) as resp:
+        token_json = json.loads(resp.read().decode("utf-8"))
+
+    google_access_token = token_json.get("access_token", "")
+    if not google_access_token:
+        raise ValueError("Google token endpoint did not return an access_token")
+
+    userinfo_req = urllib.request.Request(
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        headers={"Authorization": f"Bearer {google_access_token}"},
+    )
+    with urllib.request.urlopen(userinfo_req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+async def oauth_google_callback_endpoint(request: Request) -> Response:
+    """
+    Google OIDC Callback Endpoint (`/oauth/callback`).
+    Verifies the signed `federated_state`, exchanges Google's `code` for the user's verified email,
+    checks `ALLOWED_GOOGLE_EMAILS`, and redirects back to the MCP client (`redirect_uri`) with a
+    signed MCP authorization `code`.
+    """
+    params = dict(request.query_params)
+    error = params.get("error")
+    if error:
+        return HTMLResponse(
+            status_code=403,
+            content=(
+                f"<html><body style='font-family:sans-serif;padding:2rem;'>"
+                f"<h2>Google SSO Authentication Failed</h2><p>Error: {error}</p></body></html>"
+            ),
+        )
+
+    google_code = params.get("code", "")
+    federated_state = params.get("state", "")
+    state_payload = verify_signed_token(federated_state, expected_type="google_sso_state")
+    if not google_code or not state_payload:
+        return HTMLResponse(
+            status_code=400,
+            content=(
+                "<html><body style='font-family:sans-serif;padding:2rem;'>"
+                "<h2>Invalid or Expired OAuth State</h2>"
+                "<p>Please close this window and start the MCP connection again.</p></body></html>"
+            ),
+        )
+
+    google_callback = state_payload.get("gcb") or _resolve_google_callback_url(request)
+    try:
+        userinfo = await asyncio.to_thread(
+            _exchange_google_code_for_userinfo_sync,
+            google_code,
+            google_callback,
+        )
+    except Exception as exc:
+        logger.error("Failed to exchange Google OAuth code: %s", exc)
+        return HTMLResponse(
+            status_code=502,
+            content=(
+                "<html><body style='font-family:sans-serif;padding:2rem;'>"
+                "<h2>Google OAuth Token Exchange Failed</h2>"
+                f"<p>Could not verify Google credentials ({exc}). Check redirect_uri configuration.</p></body></html>"
+            ),
+        )
+
+    email = (userinfo.get("email") or "").strip().lower()
+    email_verified = bool(userinfo.get("email_verified", False))
+    allowed_emails = settings.allowed_google_emails_list
+
+    if not email or not email_verified or (allowed_emails and email not in allowed_emails):
+        logger.warning(
+            "Blocked unauthorized Google SSO login attempt: email=%s verified=%s allowed=%s",
+            email,
+            email_verified,
+            allowed_emails,
+        )
+        return HTMLResponse(
+            status_code=403,
+            content=(
+                "<html><body style='font-family:sans-serif;padding:2rem;color:#b91c1c;'>"
+                "<h2>403 Access Denied — 허용되지 않은 계정입니다</h2>"
+                f"<p>로그인한 Google 계정(<b>{email or 'unknown'}</b>)은 이 Camoufox MCP 서버에 접근할 권한이 없습니다.</p>"
+                "</body></html>"
+            ),
+        )
+
+    logger.info("Google SSO authorized user '%s' for MCP client '%s'", email, state_payload.get("cid"))
+
+    mcp_code = create_signed_token(
+        {
+            "typ": "auth_code",
+            "cid": state_payload.get("cid", settings.OAUTH_CLIENT_ID),
+            "ruri": state_payload.get("ruri", ""),
+            "scope": state_payload.get("scope", "mcp"),
+            "cc": state_payload.get("cc", ""),
+            "ccm": state_payload.get("ccm", "S256"),
+            "sub": email,
+        },
+        ttl_seconds=600,
+    )
+
+    redirect_uri = state_payload["ruri"]
+    original_state = state_payload.get("st", "")
+    parsed_redirect = urlparse(redirect_uri)
+    query_dict = dict(parse_qsl(parsed_redirect.query, keep_blank_values=True))
+    query_dict["code"] = mcp_code
+    if original_state:
+        query_dict["state"] = original_state
 
     target_redirect = urlunparse(
         parsed_redirect._replace(query=urlencode(query_dict))

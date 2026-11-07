@@ -79,6 +79,21 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secret
                   key: OAUTH_CLIENT_SECRET
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: GOOGLE_CLIENT_ID
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: GOOGLE_CLIENT_SECRET
+            - name: ALLOWED_GOOGLE_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secret
+                  key: ALLOWED_GOOGLE_EMAILS
             - name: DEFAULT_PROXY_SERVER
               valueFrom:
                 secretKeyRef:
