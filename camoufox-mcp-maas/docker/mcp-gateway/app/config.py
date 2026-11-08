@@ -77,6 +77,19 @@ class Settings(BaseSettings):
         default="/data/profiles",
         description="Persistent directory path for storing and loading BrowserContext storage states.",
     )
+    SCREENSHOT_STORAGE_DIR: str = Field(
+        default="/data/profiles/_screenshots",
+        description="Directory path for storing temporary screenshot PNG files.",
+    )
+    SCREENSHOT_TTL_SECONDS: int = Field(
+        default=86400,
+        ge=60,
+        description="Temporary screenshot URL & file TTL in seconds before automatic expiration and deletion (default 86400 = 1 day).",
+    )
+    PUBLIC_BASE_URL: str = Field(
+        default="https://mcp.kimohy.kr/camoufox",
+        description="Fallback external base URL used when constructing temporary screenshot links.",
+    )
     DEFAULT_PROXY_SERVER: Optional[str] = Field(
         default=None,
         description="Optional default outbound proxy server URL (e.g., http://proxy:8080 or socks5://proxy:1080).",
@@ -124,6 +137,13 @@ class Settings(BaseSettings):
     def profile_dir_path(self) -> Path:
         """Ensure profile directory exists and return Path instance."""
         path = Path(self.PROFILE_STORAGE_DIR).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def screenshot_dir_path(self) -> Path:
+        """Ensure screenshot directory exists and return Path instance."""
+        path = Path(self.SCREENSHOT_STORAGE_DIR).resolve()
         path.mkdir(parents=True, exist_ok=True)
         return path
 

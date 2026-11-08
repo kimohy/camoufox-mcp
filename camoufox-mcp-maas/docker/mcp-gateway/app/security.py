@@ -55,6 +55,9 @@ current_tenant_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 current_client_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_client_key", default=""
 )
+current_base_url: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_base_url", default=""
+)
 
 
 def _derive_tenant_id(prefix: str, raw_identity: str) -> str:
@@ -71,6 +74,11 @@ def get_current_tenant_id() -> str:
 def get_current_client_key() -> str:
     """Return the client-level connection key (e.g., OAuth token jti) for default session isolation."""
     return current_client_key.get()
+
+
+def get_current_base_url() -> str:
+    """Return the external base URL (e.g., https://mcp.kimohy.kr/camoufox) for the current request."""
+    return current_base_url.get() or settings.PUBLIC_BASE_URL.rstrip("/")
 
 OAUTH_PUBLIC_PATHS = {
     "/healthz",
@@ -888,6 +896,152 @@ async def ssrf_route_interceptor(route: Route, request: PwRequest) -> None:
         pass
 
 
+SCREENSHOT_ID_PATTERN = re.compile(r"^[0-9]{10}_[a-f0-9]{24}\.png$")
+
+
+def save_temporary_screenshot(png_bytes: bytes, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Save screenshot PNG bytes to `SCREENSHOT_STORAGE_DIR` with a 1-day TTL (`SCREENSHOT_TTL_SECONDS`)
+    and return a signed temporary URL metadata dictionary.
+    """
+    effective_tenant = (tenant_id or get_current_tenant_id() or "anonymous").strip()
+    if not PROFILE_NAME_PATTERN.match(effective_tenant):
+        effective_tenant = _derive_tenant_id("tenant", effective_tenant)
+
+    now_ts = int(time.time())
+    ttl = int(settings.SCREENSHOT_TTL_SECONDS)
+    expires_at = now_ts + ttl
+    rand_id = secrets.token_hex(12)
+    filename = f"{expires_at:010d}_{rand_id}.png"
+
+    tenant_dir = (settings.screenshot_dir_path / effective_tenant).resolve()
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+    file_path = (tenant_dir / filename).resolve()
+    if tenant_dir not in file_path.parents:
+        raise ValueError("Invalid screenshot path resolution.")
+
+    tmp_path = file_path.with_name(f".{filename}.tmp")
+    with open(tmp_path, "wb") as f:
+        f.write(png_bytes)
+    os.replace(str(tmp_path), str(file_path))
+
+    sig = hmac.new(
+        settings.effective_signing_secret.encode("utf-8"),
+        f"shot:{effective_tenant}:{filename}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+
+    base_url = get_current_base_url().rstrip("/")
+    url = f"{base_url}/screenshots/{effective_tenant}/{filename}?sig={sig}"
+    return {
+        "url": url,
+        "expires_at": expires_at,
+        "ttl_seconds": ttl,
+        "size_bytes": len(png_bytes),
+        "filename": filename,
+        "tenant_id": effective_tenant,
+    }
+
+
+def cleanup_expired_screenshots_sync() -> int:
+    """Delete all screenshot files whose embedded expiration timestamp or mtime has passed."""
+    base_dir = settings.screenshot_dir_path
+    if not base_dir.exists():
+        return 0
+
+    now_ts = int(time.time())
+    ttl = int(settings.SCREENSHOT_TTL_SECONDS)
+    deleted_count = 0
+
+    for root, _, files in os.walk(base_dir):
+        for fname in files:
+            fpath = Path(root) / fname
+            expired = False
+            if SCREENSHOT_ID_PATTERN.match(fname):
+                try:
+                    exp_ts = int(fname.split("_", 1)[0])
+                    if now_ts >= exp_ts:
+                        expired = True
+                except Exception:
+                    pass
+            if not expired:
+                try:
+                    mtime = int(fpath.stat().st_mtime)
+                    if (now_ts - mtime) >= ttl:
+                        expired = True
+                except Exception:
+                    pass
+            if expired:
+                try:
+                    fpath.unlink()
+                    deleted_count += 1
+                except Exception:
+                    pass
+    return deleted_count
+
+
+async def screenshot_download_endpoint(request: Request) -> Response:
+    """
+    Serve a temporary screenshot PNG (`/screenshots/{tenant_id}/{filename}?sig=...`)
+    if its HMAC signature is valid and its 1-day TTL has not expired.
+    """
+    tenant_id = request.path_params.get("tenant_id", "")
+    filename = request.path_params.get("filename", "")
+    sig = request.query_params.get("sig", "")
+
+    if not PROFILE_NAME_PATTERN.match(tenant_id) or not SCREENSHOT_ID_PATTERN.match(filename) or not sig:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Not Found", "message": "Invalid screenshot identifier or signature."},
+        )
+
+    expected_sig = hmac.new(
+        settings.effective_signing_secret.encode("utf-8"),
+        f"shot:{tenant_id}:{filename}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+
+    if not hmac.compare_digest(sig, expected_sig):
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Forbidden", "message": "Invalid screenshot signature."},
+        )
+
+    exp_ts = int(filename.split("_", 1)[0])
+    now_ts = int(time.time())
+    if now_ts >= exp_ts:
+        file_path = (settings.screenshot_dir_path / tenant_id / filename).resolve()
+        if file_path.is_file():
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+        return JSONResponse(
+            status_code=410,
+            content={"error": "Gone", "message": "Screenshot URL has expired (TTL 1 day) and been deleted."},
+        )
+
+    tenant_dir = (settings.screenshot_dir_path / tenant_id).resolve()
+    file_path = (tenant_dir / filename).resolve()
+    if tenant_dir not in file_path.parents or not file_path.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Not Found", "message": "Screenshot file not found or already expired."},
+        )
+
+    remaining_ttl = max(0, exp_ts - now_ts)
+    png_bytes = await asyncio.to_thread(file_path.read_bytes)
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": f"public, max-age={remaining_ttl}",
+            "X-Expires-At": str(exp_ts),
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 def sanitize_profile_path(profile_name: str, tenant_id: Optional[str] = None) -> Path:
     """
     Validate profile_name, isolate storage per authenticated tenant (`/data/profiles/{tenant_id}/{profile_name}.json`),
@@ -958,10 +1112,13 @@ class AuthMiddleware:
             scope["raw_path"] = path.encode("utf-8")
             scope["root_path"] = existing_root
 
-        # 1. Bypass auth for Kubernetes probes and OAuth 2.0 discovery / token endpoints
-        if path in OAUTH_PUBLIC_PATHS or path.startswith("/.well-known/"):
+        # 1. Bypass auth for Kubernetes probes, temporary signed screenshots, and OAuth 2.0 discovery / token endpoints
+        if path in OAUTH_PUBLIC_PATHS or path.startswith("/.well-known/") or path.startswith("/screenshots/"):
             await self.app(scope, receive, send)
             return
+
+        req_for_base = Request(scope)
+        resolved_ext_base = get_external_base_url(req_for_base)
 
         # 2. Check URL Path Secret Token (/s/{SECRET_URL_TOKEN}/...)
         secret_token = settings.SECRET_URL_TOKEN.strip()
@@ -978,11 +1135,13 @@ class AuthMiddleware:
                 tenant_val = _derive_tenant_id("urltok", candidate_token)
                 t_tok = current_tenant_id.set(tenant_val)
                 c_tok = current_client_key.set(tenant_val)
+                b_tok = current_base_url.set(resolved_ext_base)
                 try:
                     await self.app(new_scope, receive, send)
                 finally:
                     current_tenant_id.reset(t_tok)
                     current_client_key.reset(c_tok)
+                    current_base_url.reset(b_tok)
                 return
             else:
                 response = JSONResponse(
@@ -1022,11 +1181,13 @@ class AuthMiddleware:
                     client_val = _derive_tenant_id("tok", f"{cid}:{jti}")
                     t_tok = current_tenant_id.set(tenant_val)
                     c_tok = current_client_key.set(client_val)
+                    b_tok = current_base_url.set(resolved_ext_base)
                     try:
                         await self.app(scope, receive, send)
                     finally:
                         current_tenant_id.reset(t_tok)
                         current_client_key.reset(c_tok)
+                        current_base_url.reset(b_tok)
                     return
 
                 # 3b. Verify static API key or OAuth Client Secret
@@ -1034,11 +1195,13 @@ class AuthMiddleware:
                     tenant_val = _derive_tenant_id("apikey", provided_token)
                     t_tok = current_tenant_id.set(tenant_val)
                     c_tok = current_client_key.set(tenant_val)
+                    b_tok = current_base_url.set(resolved_ext_base)
                     try:
                         await self.app(scope, receive, send)
                     finally:
                         current_tenant_id.reset(t_tok)
                         current_client_key.reset(c_tok)
+                        current_base_url.reset(b_tok)
                     return
 
             response = JSONResponse(

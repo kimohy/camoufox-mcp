@@ -101,6 +101,10 @@ spec:
                   key: DEFAULT_PROXY_SERVER
             - name: SESSION_TTL_SECONDS
               value: {{ .Values.mcpGateway.sessionTtlSeconds | quote }}
+            - name: SCREENSHOT_TTL_SECONDS
+              value: {{ .Values.mcpGateway.screenshotTtlSeconds | default 86400 | quote }}
+            - name: PUBLIC_BASE_URL
+              value: {{ .Values.mcpGateway.publicBaseUrl | default "https://mcp.kimohy.kr/camoufox" | quote }}
             - name: MAX_SESSIONS
               value: {{ .Values.mcpGateway.maxSessions | quote }}
             - name: NAVIGATION_TIMEOUT_MS

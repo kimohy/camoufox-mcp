@@ -415,7 +415,7 @@ if __name__ == "__main__":
 | `click` | `selector: str`<br>`session_id?: str` | JSON 문자열 (`current_url`, `title`) | 베지어 곡선 마우스 이동 및 `delay=100`ms로 인간형 클릭을 수행합니다. |
 | `fill` | `selector: str`<br>`text: str`<br>`press_enter: bool = False`<br>`session_id?: str` | JSON 문자열 (`typed_length`, `current_url`) | 요소를 클릭한 뒤 `press_sequentially(text, delay=65)`로 사람처럼 한 글자씩 타이핑합니다. |
 | `evaluate_js` | `script: str`<br>`session_id?: str` | JSON 문자열 (`result`) | 현재 페이지 DOM 컨텍스트에서 임의의 JavaScript 표현식/함수를 실행합니다. |
-| `take_screenshot` | `session_id?: str`<br>`full_page: bool = False` | `mcp.server.fastmcp.Image` (PNG 바이너리) | 멀티모달 LLM이 시각적으로 화면 레이아웃이나 차트, 캡차를 판독할 수 있도록 스크린샷을 반환합니다. |
+| `take_screenshot` | `session_id?: str`<br>`full_page: bool = False`<br>`include_inline_image: bool = False` | JSON 문자열 (`screenshot_url`, `markdown_image`, `expires_at_iso`, `ttl_seconds: 86400`) + 선택적 `Image` | 현재 뷰포트(또는 전체 페이지)를 PNG로 캡처해 테넌트별 격리 스토리지(`/data/profiles/_screenshots/{tenant_id}/`)에 저장하고 **1일(86,400초) 후 자동 소멸되는 HMAC 서명 임시 URL**을 반환합니다. |
 | `save_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `saved_path`) | 현재 세션의 쿠키/로컬스토리지를 인증된 사용자의 전용 디렉터리(`/data/profiles/{tenant_id}/{profile_name}.json`)에 원자적(Atomic Write)으로 영구 저장합니다. |
 | `load_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `loaded_from`) | 인증된 사용자의 전용 디렉터리에서 저장된 프로필 파일로 격리된 `BrowserContext`를 즉시 복원합니다(타 사용자 프로필 접근 불가). |
 | `close_session` | `session_id?: str` | JSON 문자열 (`closed`, `active_sessions`) | 작업이 끝난 브라우저 컨텍스트를 즉시 닫고 메모리를 반환합니다. |
@@ -483,15 +483,21 @@ Camoufox 풀은 `geoip=True`가 활성화되어 있어, 프록시 서버를 통�
 
 ---
 
-### 활용법 4: 멀티모달 시각적 웹 탐색 (Visual Grounding with `take_screenshot`)
+### 활용법 4: 임시 URL 기반 스크린샷 공유 및 멀티모달 시각적 웹 탐색 (`take_screenshot`)
 
-DOM 텍스트만으로는 파악하기 어려운 Canvas 기반 차트, 복잡한 SPA 대시보드, 또는 시각적 레이아웃 검증이 필요할 때 `take_screenshot`과 `get_interactive_elements`를 결합합니다.
+`take_screenshot` 도구는 캡처한 PNG 이미지를 테넌트별 격리 디렉터리(`/data/profiles/_screenshots/{tenant_id}/{expires_at}_{random_hex}.png`)에 저장하고, **1일(`SCREENSHOT_TTL_SECONDS=86400`) 동안만 유효한 HMAC-SHA256 서명 임시 URL**을 반환합니다.
+
+* **임시 URL 구조**: `https://mcp.yourdomain.com/camoufox/screenshots/{tenant_id}/{expires_at}_{random_hex}.png?sig={hmac_signature}`
+* **인증 헤더 불필요 & 위변조/타 테넌트 접근 차단**: URL 쿼리에 포함된 `?sig=` HMAC 서명이 `tenant_id`와 파일명(만료 시각 포함)을 검증하므로, 웹 브라우저나 마크다운 이미지(`![screenshot](...)`)로 바로 열어볼 수 있으면서도 서명이 다르거나 다른 사용자의 파일에는 절대 접근할 수 없습니다(`403 Forbidden`).
+* **1일(24시간) TTL 자동 소멸 (2중 정리)**:
+  1. **백그라운드 GC 루프**: `session_pool`의 가비지 컬렉터가 60초마다 만료된 스크린샷 파일을 디스크에서 영구 삭제합니다.
+  2. **요청 시점 즉시 삭제**: 만료 시각이 지난 URL에 접근하면 파일을 즉시 삭제하고 `410 Gone`을 반환합니다.
+* **멀티모달 인라인 이미지 동시 반환 옵션**: 텍스트/URL뿐만 아니라 LLM에 원본 PNG 바이너리까지 함께 전달하고 싶다면 `include_inline_image=True`로 호출합니다.
 
 **프롬프트 예시:**
 > ```text
-> 1. navigate로 https://tradingview.com 차트 페이지에 접속해줘.
-> 2. take_screenshot(full_page=False)으로 현재 차트 화면을 캡처해서 현재 추세와 인터페이스를 시각적으로 분석해줘.
-> 3. 화면 우측 상단의 검색 버튼을 클릭하기 위해 get_interactive_elements 결과의 rect 좌표와 스크린샷의 위치를 대조해서 정확한 셀렉터를 click 해줘.
+> 1. navigate로 https://news.ycombinator.com 페이지에 접속해줘.
+> 2. take_screenshot(full_page=False)으로 현재 화면을 캡처하고, 생성된 임시 스크린샷 URL과 만료 시간을 알려줘.
 > ```
 
 ---

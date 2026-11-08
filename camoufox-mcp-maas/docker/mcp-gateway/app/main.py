@@ -24,6 +24,8 @@ from app.security import (
     oauth_register_endpoint,
     oauth_token_endpoint,
     sanitize_profile_path,
+    save_temporary_screenshot,
+    screenshot_download_endpoint,
 )
 from app.session_pool import session_pool
 
@@ -396,19 +398,42 @@ async def evaluate_js(
 async def take_screenshot(
     session_id: Optional[str] = None,
     full_page: bool = False,
+    include_inline_image: bool = False,
     ctx: Optional[Context] = None,
-) -> Image:
+) -> Any:
     """
-    Capture a PNG screenshot of the current browser viewport (or full scrollable page)
-    and return it as an `mcp.server.fastmcp.Image` object for multimodal LLMs (e.g., Gemini).
+    Capture a PNG screenshot of the current browser viewport (or full scrollable page),
+    save it to isolated tenant storage, and return a signed temporary URL with a 1-day TTL
+    (86,400 seconds) that automatically expires and self-deletes.
+    Set `include_inline_image=True` if you also want the raw multimodal Image payload in addition to the URL.
     """
     sid = resolve_session_id(ctx, session_id)
+    tenant_id = get_current_tenant_id()
     entry = await session_pool.get_or_create_session(session_id=sid)
 
     async with entry.lock:
         entry.touch()
         png_bytes = await entry.page.screenshot(type="png", full_page=full_page)
-        return Image(data=png_bytes, format="png")
+        current_url = entry.page.url
+        title = await entry.page.title()
+
+    shot_meta = await asyncio.to_thread(save_temporary_screenshot, png_bytes, tenant_id)
+    payload = {
+        "status": "ok",
+        "session_id": sid,
+        "page_url": current_url,
+        "page_title": title,
+        "screenshot_url": shot_meta["url"],
+        "markdown_image": f"![{title or 'screenshot'}]({shot_meta['url']})",
+        "expires_at": shot_meta["expires_at"],
+        "expires_at_iso": shot_meta["expires_at_iso"],
+        "ttl_seconds": shot_meta["ttl_seconds"],
+        "size_bytes": shot_meta["size_bytes"],
+    }
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if include_inline_image:
+        return [json_text, Image(data=png_bytes, format="png")]
+    return json_text
 
 
 @mcp.tool()
@@ -588,6 +613,11 @@ def _create_combined_asgi_app() -> AuthMiddleware:
         Route("/oauth/callback", endpoint=oauth_google_callback_endpoint, methods=["GET", "POST"]),
         Route("/oauth/token", endpoint=oauth_token_endpoint, methods=["POST", "OPTIONS"]),
         Route("/oauth/register", endpoint=oauth_register_endpoint, methods=["POST", "OPTIONS"]),
+        Route(
+            "/screenshots/{tenant_id}/{filename}",
+            endpoint=screenshot_download_endpoint,
+            methods=["GET", "HEAD"],
+        ),
     ]
 
     # Collect routes from both streamable_http_app (/mcp) and sse_app (/sse, /messages)

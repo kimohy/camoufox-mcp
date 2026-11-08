@@ -16,7 +16,7 @@ from playwright.async_api import (
 )
 
 from app.config import settings
-from app.security import ssrf_route_interceptor
+from app.security import cleanup_expired_screenshots_sync, ssrf_route_interceptor
 
 logger = logging.getLogger("camoufox.session_pool")
 
@@ -347,6 +347,11 @@ class CamoufoxSessionPool:
                         settings.SESSION_TTL_SECONDS,
                     )
                     await self._safe_close_entry(entry)
+
+                # Also purge expired temporary screenshot files (1-day TTL)
+                deleted_shots = await asyncio.to_thread(cleanup_expired_screenshots_sync)
+                if deleted_shots > 0:
+                    logger.info("Purged %d expired screenshot file(s)", deleted_shots)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

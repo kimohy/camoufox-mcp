@@ -35,7 +35,9 @@ mcpGateway:
     pullPolicy: Always
   port: 8000
   basePathPrefix: "/camoufox"
+  publicBaseUrl: "https://mcp.kimohy.kr/camoufox"
   sessionTtlSeconds: 600
+  screenshotTtlSeconds: 86400
   maxSessions: 20
   navigationTimeoutMs: 45000
   profileStorage:
