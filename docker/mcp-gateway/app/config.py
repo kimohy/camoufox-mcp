@@ -98,6 +98,26 @@ class Settings(BaseSettings):
         default=45000,
         description="Default page navigation timeout in milliseconds.",
     )
+    TOOL_TIMEOUT_SECONDS: int = Field(
+        default=60,
+        ge=5,
+        description="Hard upper-bound execution timeout in seconds for any single MCP tool call.",
+    )
+    JS_EVAL_TIMEOUT_SECONDS: int = Field(
+        default=20,
+        ge=2,
+        description="Hard execution timeout in seconds for evaluate_js tool calls.",
+    )
+    SESSION_LOCK_TIMEOUT_SECONDS: int = Field(
+        default=15,
+        ge=2,
+        description="Maximum wait time in seconds to acquire a session's concurrency lock.",
+    )
+    DNS_RESOLVE_TIMEOUT_SECONDS: float = Field(
+        default=5.0,
+        ge=1.0,
+        description="Maximum wait time in seconds for SSRF pre-flight DNS resolution.",
+    )
 
     @property
     def api_keys_list(self) -> List[str]:

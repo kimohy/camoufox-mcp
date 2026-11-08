@@ -414,11 +414,18 @@ if __name__ == "__main__":
 | `get_interactive_elements` | `session_id?: str` | JSON 문자열 (`count`, `elements[]`) | 현재 뷰포트에서 실제로 보이는(`width > 0 && height > 0`) 버튼/링크/입력창 목록과 권장 CSS 셀렉터(`selector_hint`), 좌표(`rect`)를 반환합니다. |
 | `click` | `selector: str`<br>`session_id?: str` | JSON 문자열 (`current_url`, `title`) | 베지어 곡선 마우스 이동 및 `delay=100`ms로 인간형 클릭을 수행합니다. |
 | `fill` | `selector: str`<br>`text: str`<br>`press_enter: bool = False`<br>`session_id?: str` | JSON 문자열 (`typed_length`, `current_url`) | 요소를 클릭한 뒤 `press_sequentially(text, delay=65)`로 사람처럼 한 글자씩 타이핑합니다. |
-| `evaluate_js` | `script: str`<br>`session_id?: str` | JSON 문자열 (`result`) | 현재 페이지 DOM 컨텍스트에서 임의의 JavaScript 표현식/함수를 실행합니다. |
+| `evaluate_js` | `script: str`<br>`session_id?: str` | JSON 문자열 (`result`) | 현재 페이지 DOM 컨텍스트에서 임의의 JavaScript 표현식/함수를 실행합니다 (`JS_EVAL_TIMEOUT_SECONDS=20`초 하드 타임아웃 강제 적용). |
 | `take_screenshot` | `session_id?: str`<br>`full_page: bool = False`<br>`include_inline_image: bool = False` | JSON 문자열 (`screenshot_url`, `markdown_image`, `expires_at_iso`, `ttl_seconds: 86400`) + 선택적 `Image` | 현재 뷰포트(또는 전체 페이지)를 PNG로 캡처해 테넌트별 격리 스토리지(`/data/profiles/_screenshots/{tenant_id}/`)에 저장하고 **1일(86,400초) 후 자동 소멸되는 HMAC 서명 임시 URL**을 반환합니다. |
 | `save_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `saved_path`) | 현재 세션의 쿠키/로컬스토리지를 인증된 사용자의 전용 디렉터리(`/data/profiles/{tenant_id}/{profile_name}.json`)에 원자적(Atomic Write)으로 영구 저장합니다. |
 | `load_profile` | `profile_name: str`<br>`session_id?: str` | JSON 문자열 (`tenant_id`, `loaded_from`) | 인증된 사용자의 전용 디렉터리에서 저장된 프로필 파일로 격리된 `BrowserContext`를 즉시 복원합니다(타 사용자 프로필 접근 불가). |
 | `close_session` | `session_id?: str` | JSON 문자열 (`closed`, `active_sessions`) | 작업이 끝난 브라우저 컨텍스트를 즉시 닫고 메모리를 반환합니다. |
+
+> **전역 하드 타임아웃 및 자동 복구 (`run_with_tool_timeout`)**:
+> 모든 MCP 도구는 무한 대기(Hang)를 원천 차단하기 위해 다계층 타임아웃으로 보호됩니다:
+> * **도구 전체 실행 제한 (`TOOL_TIMEOUT_SECONDS=60`초)**: 어떤 도구 호출이든 최대 60초를 초과하면 즉시 강제 종료하고 `{"status": "timeout", ...}` JSON을 반환하며, 브라우저 탭에 `window.stop()`을 호출해 세션을 자동 복구합니다.
+> * **JavaScript 실행 제한 (`JS_EVAL_TIMEOUT_SECONDS=20`초)**: `evaluate_js`에서 무한 루프나 미결 Promise가 발생할 경우 20초 후 강제 취소합니다.
+> * **세션 락 획득 대기 제한 (`SESSION_LOCK_TIMEOUT_SECONDS=15`초)**: 동일 `session_id`에서 이전 요청이 지연될 때 후속 요청이 무한 대기하지 않도록 최대 15초만 대기합니다.
+> * **SSRF DNS 조회 제한 (`DNS_RESOLVE_TIMEOUT_SECONDS=5`초)**: 응답 없는 DNS 서버로 인한 이벤트 루프 지연을 방지합니다.
 
 ---
 

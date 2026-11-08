@@ -109,6 +109,12 @@ spec:
               value: {{ .Values.mcpGateway.maxSessions | quote }}
             - name: NAVIGATION_TIMEOUT_MS
               value: {{ .Values.mcpGateway.navigationTimeoutMs | quote }}
+            - name: TOOL_TIMEOUT_SECONDS
+              value: {{ .Values.mcpGateway.toolTimeoutSeconds | default 60 | quote }}
+            - name: JS_EVAL_TIMEOUT_SECONDS
+              value: {{ .Values.mcpGateway.jsEvalTimeoutSeconds | default 20 | quote }}
+            - name: SESSION_LOCK_TIMEOUT_SECONDS
+              value: {{ .Values.mcpGateway.sessionLockTimeoutSeconds | default 15 | quote }}
             - name: PROFILE_STORAGE_DIR
               value: {{ .Values.mcpGateway.profileStorage.mountPath | default "/data/profiles" | quote }}
           volumeMounts:

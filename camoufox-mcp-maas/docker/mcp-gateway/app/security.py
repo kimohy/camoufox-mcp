@@ -867,8 +867,14 @@ def is_safe_url_sync(url: str) -> Tuple[bool, str]:
 
 
 async def is_safe_url(url: str) -> Tuple[bool, str]:
-    """Asynchronous wrapper around is_safe_url_sync to avoid blocking the asyncio event loop."""
-    return await asyncio.to_thread(is_safe_url_sync, url)
+    """Asynchronous wrapper around is_safe_url_sync with a strict DNS resolution timeout."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(is_safe_url_sync, url),
+            timeout=float(settings.DNS_RESOLVE_TIMEOUT_SECONDS),
+        )
+    except asyncio.TimeoutError:
+        return False, f"DNS resolution timed out after {settings.DNS_RESOLVE_TIMEOUT_SECONDS}s"
 
 
 async def ssrf_route_interceptor(route: Route, request: PwRequest) -> None:

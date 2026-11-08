@@ -40,6 +40,9 @@ mcpGateway:
   screenshotTtlSeconds: 86400
   maxSessions: 20
   navigationTimeoutMs: 45000
+  toolTimeoutSeconds: 60
+  jsEvalTimeoutSeconds: 20
+  sessionLockTimeoutSeconds: 15
   profileStorage:
     enabled: true
     mountPath: "/data/profiles"
