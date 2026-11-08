@@ -11,6 +11,7 @@ import re
 import secrets
 import socket
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -933,9 +934,11 @@ def save_temporary_screenshot(png_bytes: bytes, tenant_id: Optional[str] = None)
 
     base_url = get_current_base_url().rstrip("/")
     url = f"{base_url}/screenshots/{effective_tenant}/{filename}?sig={sig}"
+    expires_at_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "url": url,
         "expires_at": expires_at,
+        "expires_at_iso": expires_at_iso,
         "ttl_seconds": ttl,
         "size_bytes": len(png_bytes),
         "filename": filename,
